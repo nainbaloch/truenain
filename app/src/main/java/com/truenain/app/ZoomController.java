@@ -187,6 +187,13 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         else { stopMotion(); zoom = 1f; panX = panY = 0; cxN = cyN = 0.5f; dispatch(false); }
     }
 
+    /** L1: view detach hone par pending settle/animation band (leak + late callback se bachao). */
+    public void destroy() {
+        handler.removeCallbacks(settleTask);
+        stopMotion();
+        generation++;
+    }
+
     public float getZoom() { return zoom; }
     public float getMaxZoom() { return maxZoom; }
     /** Zoom level where 1 source pixel = 1 screen pixel. */

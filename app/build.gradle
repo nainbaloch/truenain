@@ -10,8 +10,8 @@ android {
         applicationId 'com.truenain.app'
         minSdk 29
         targetSdk 35
-        versionCode 248
-        versionName '2.4.8'
+        versionCode 249
+        versionName '2.4.9'
     }
 
     def signingPropsFile = rootProject.file('keystore.properties')
