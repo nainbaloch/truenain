@@ -40,6 +40,10 @@ final class ZoomableImageView extends View {
     private float lastX, lastY;
     private float zoom = 1f, panX, panY;   // fed from ZoomController onTransform
     private GestureActions actions;
+    private int rotationEpoch;             // L1: har rotation badalne par +1 — purana async crop reject
+
+    /** L1: zoom generation + rotation epoch ek token — dono mein se kuch badle to crop stale. */
+    private int overlayToken() { return zc.getGeneration() * 1000003 + rotationEpoch; }
 
     ZoomableImageView(Context c) {
         super(c);
@@ -131,8 +135,10 @@ final class ZoomableImageView extends View {
     };
 
     void setDisplayRotation(int r) {
-        rotation = ((r % 360) + 360) % 360;
-        sharpCrop = null;              // purana overlay foran clear — normal frame dikhe
+        float nr = ((r % 360) + 360) % 360;
+        if (nr != rotation) rotationEpoch++;
+        rotation = nr;
+        dropSharpCrop();               // purana overlay foran clear — normal frame dikhe
         updateZcContent();
         removeCallbacks(settledRefresh);
         postDelayed(settledRefresh, 350);   // layout settle hone par hi refresh
@@ -141,8 +147,10 @@ final class ZoomableImageView extends View {
 
     /** v2.4.5 fine angle (absolute total) — NORMALIZED 0..360 (no unbounded accumulation). */
     void setFineRotation(float deg) {
-        rotation = ((deg % 360) + 360) % 360;
-        sharpCrop = null;              // purana overlay foran clear — normal frame dikhe
+        float nr = ((deg % 360) + 360) % 360;
+        if (nr != rotation) rotationEpoch++;
+        rotation = nr;
+        dropSharpCrop();               // purana overlay foran clear — normal frame dikhe
         updateZcContent();
         removeCallbacks(settledRefresh);
         postDelayed(settledRefresh, 350);   // layout settle hone par hi refresh
@@ -151,16 +159,28 @@ final class ZoomableImageView extends View {
 
     float getRotationDeg() { return rotation; }
 
+    private void dropSharpCrop() {
+        Bitmap old = sharpCrop;
+        sharpCrop = null;
+        if (old != null && !old.isRecycled()) old.recycle();
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        removeCallbacks(settledRefresh);
+        zc.destroy();
+    }
+
     void zoomBy(float f) { zc.zoomBy(f); }
     void resetZoom() { zc.reset(false); sharpCrop = null; invalidate(); }
     /** v2.4.6: stale-guard generation for the async settled crop. */
-    int getZcGeneration() { return zc.getGeneration(); }
+    int getZcGeneration() { return overlayToken(); }
     /** v2.4.6 PHASE 2: zoom-aware look grading needs the current zoom. */
     float getZoom() { return zc.getZoom(); }
 
     /** Settled sharp view (view-sized bicubic crop). Dropped automatically on the next move. */
     void setSharpCrop(Bitmap b, int generation) {
-        if (b != null && !zc.isCurrent(generation)) { b.recycle(); return; }   // stale — pack rule
+        if (b != null && generation != overlayToken()) { b.recycle(); return; }   // stale (zoom ya rotation badla)
         if (sharpCrop != null && sharpCrop != b && !sharpCrop.isRecycled()) sharpCrop.recycle();
         sharpCrop = b;
         invalidate();
