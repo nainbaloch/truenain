@@ -63,8 +63,10 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
     private float vw, vh;            // view size
     private float cw, ch;            // content size in source pixels (after rotation)
     private float base = 1f;         // fit-to-view scale
+    private float baseFactor = 1f;   // v2.4.8: host display-base multiplier (Frame FILL/1:1)
     private float zoom = 1f;         // 1 = fit
     private float maxZoom = 8f;
+    private Float overrideMaxZoom = null;   // v2.4.8: host-set cap (Player maxPlayerZoom) — relayout par bhi barkarar
     private float panX, panY;        // offset of content centre from view centre, in view px
     private float cxN = 0.5f, cyN = 0.5f; // content point at view centre (0..1), survives rotation/resize
     private float lastFx, lastFy;
@@ -151,6 +153,32 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         cw = srcW; ch = srcH; relayout();
     }
 
+    /** v2.4.8 FIX (auto-zoom jump ka asli jarr): host ka ASLI display base factor.
+     *  ZC hamesha FIT-min base maanta tha, lekin Frame drawing FILL (max) / 1:1 (1)
+     *  base use karti hai — FILL/1:1 mein ZC ka visible-rect GHALAT banta tha →
+     *  settled sharp-crop ghalat region ka → har settle par zoom jump
+     *  (user: "zoom apne aap in/out"). Factor lagane par dono ka base barabar. */
+    public void setBaseFactor(float f) {
+        if (f <= 0f || Float.isNaN(f) || Float.isInfinite(f)) f = 1f;
+        if (Math.abs(f - baseFactor) < 0.0001f) return;
+        baseFactor = f;
+        relayout();
+    }
+
+    /** v2.4.8: host-set zoom cap (Player = maxPlayerZoom) — relayout par bhi barkarar,
+     *  warna har layout change generic rule se cap overwrite ho jata tha. */
+    public void setMaxZoom(float m) {
+        if (Float.isNaN(m) || Float.isInfinite(m)) return;
+        float nm = clamp(m, 1f, 12f);
+        if (overrideMaxZoom != null && Math.abs(nm - overrideMaxZoom) < 0.0001f) return;
+        overrideMaxZoom = nm;
+        if (Math.abs(nm - maxZoom) < 0.0001f) return;
+        maxZoom = nm;
+        zoom = clamp(zoom, 1f, maxZoom);
+        clampPan(zoom);
+        dispatchQuiet();
+    }
+
     public void zoomIn()  { zoomBy(1.5f); }
     public void zoomOut() { zoomBy(1f / 1.5f); }
     public void zoomBy(float factor) { animateZoom(zoom * factor, 0, 0, 180); }
@@ -222,8 +250,10 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
 
     private void relayout() {
         if (vw <= 0 || vh <= 0 || cw <= 0 || ch <= 0) return;
-        base = Math.min(vw / cw, vh / ch);
-        maxZoom = clamp((cw / vw) * 2.5f, 4f, 12f);         // same rule as v2.4.5
+        base = Math.min(vw / cw, vh / ch) * baseFactor;     // v2.4.8: host display base
+        maxZoom = overrideMaxZoom != null
+                ? clamp(overrideMaxZoom, 1f, 12f)           // v2.4.8: host cap barkarar
+                : clamp((cw / vw) * 2.5f, 4f, 12f);         // same rule as v2.4.5
         maxZoom = Math.max(maxZoom, Math.min(12f, pixelPerfectZoom()));  // always allow 1:1
         zoom = clamp(zoom, 1f, maxZoom);                    // v2.4.7: only clamped if over max — zoom stays stable
         float s = base * zoom;

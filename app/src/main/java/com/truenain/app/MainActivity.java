@@ -1238,6 +1238,12 @@ public class MainActivity extends Activity {
         // Never shrink the underlying VideoView below its fixed viewport: that reveals
         // empty edges and makes the border look as if it has moved.
         float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
+        // v2.4.8: GL ko view ka ASLI zoom (total) — ek hi number view+GL dono par.
+        videoView.setLiveZoom(total);
+        // v2.4.8: ek hi cap — ZC ka maxZoom bhi isi source-pixel cap par (warna ZC zoom
+        // aage barhta rahta hai aur view ruk jata hai → pinch ke baad jump).
+        if (playerZc != null && Math.abs(maxPlayerZoom() - playerZc.getMaxZoom()) > 0.01f)
+            playerZc.setMaxZoom(maxPlayerZoom());
         videoView.setScaleX(total);
         videoView.setScaleY(total);
         videoView.setRotation(playerContentRotation + playerFineRotation);   // v2.4.4: 90-steps + fine angle
@@ -1754,7 +1760,10 @@ public class MainActivity extends Activity {
         playerZc = new ZoomController(this, touch, new ZoomController.Listener() {
             @Override public void onTransform(Matrix m, float zoom, boolean interacting) {
                 playerZoom = zoom;
-                if (videoView != null) videoView.setLiveZoom(zoom);   // v2.4.6: GL bicubic zoom path
+                // v2.4.8: setLiveZoom ab applyPlayerViewTransform mein lagta hai — GL ko
+                // VIEW par lagne wala ASLI total milta hai (pehle ZC ka raw zoom jata tha
+                // — cap/base hone par dono alag numbers → bicubic/sharpen ghalat level
+                // par switch hota tha). Ab GL aur view ek hi number par.
                 float[] vals = new float[9];
                 m.getValues(vals);
                 // ZC matrix: MTRANS = vw/2 + pan − (view-size content)·zoom/2 → pan wapas

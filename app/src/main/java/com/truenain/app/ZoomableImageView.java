@@ -49,16 +49,22 @@ final class ZoomableImageView extends View {
                 float[] vals = new float[9];
                 m.getValues(vals);
                 zoom = z;
-                // ZC matrix: MTRANS = vw/2 + pan − (bitmap size)·s/2  → pan wapas nikalo
-                panX = vals[Matrix.MTRANS_X] + (bitmap != null ? bitmap.getWidth() * vals[Matrix.MSCALE_X] / 2f : 0f)
-                        - getWidth() / 2f;
-                panY = vals[Matrix.MTRANS_Y] + (bitmap != null ? bitmap.getHeight() * vals[Matrix.MSCALE_X] / 2f : 0f)
-                        - getHeight() / 2f;
+                // v2.4.8 FIX: ZC content = ROTATED dims — pan extraction bhi rotated dims
+                // se ho. Pehle unrotated bitmap dims use hote the → rotation 90/270 par
+                // panX/panY mein (bw−cw)·s/2 ka farq → zoom ke saath frame drift karta tha.
+                boolean swap = ((int) Math.round(rotation) % 180) == 90;
+                float cwv = bitmap != null ? (swap ? bitmap.getHeight() : bitmap.getWidth()) : 0f;
+                float chv = bitmap != null ? (swap ? bitmap.getWidth() : bitmap.getHeight()) : 0f;
+                panX = vals[Matrix.MTRANS_X] + cwv * vals[Matrix.MSCALE_X] / 2f - getWidth() / 2f;
+                panY = vals[Matrix.MTRANS_Y] + chv * vals[Matrix.MSCALE_X] / 2f - getHeight() / 2f;
                 sharpCrop = null;              // fast path while moving — sharp overlay is stale
                 invalidate();
             }
             @Override public void onSettled(RectF visible, float z, int generation) {
                 if (!zc.isCurrent(generation) || !zc.isZoomed()) return;   // only when zoomed
+                // v2.4.8: tilted (fine-angle) frame par sharp overlay NAHI — bbox crop
+                // poori tarah match nahi karta → settle par jump hota tha. Seedha frame rahe.
+                if (((int) Math.round(rotation)) % 90 != 0) return;
                 if (settledListener != null) settledListener.onFrameSettled();
             }
             @Override public void onSingleTap() {
@@ -113,6 +119,7 @@ final class ZoomableImageView extends View {
     void setDisplayMode(int m) {
         displayMode = m;
         sharpCrop = null;
+        syncZcBase();                  // v2.4.8: base mode ke saath badalta hai — ZC ko batao
         invalidate();
     }
 
@@ -160,9 +167,27 @@ final class ZoomableImageView extends View {
     }
 
     /** Visible area in BITMAP pixel coords (for the settled crop decode). UI-thread only.
-     *  v2.4.6 FINAL: ZoomController content = bitmap size → visible IS the bitmap rect. */
+     *  v2.4.8 FIX: ZC visible = ROTATED content coords — seedha bitmap par lagane se
+     *  rotated video (90/180/270) ka crop GHALAT jagah banta tha (5–20% shift wala
+     *  masla). Ab corners R(−rotation) se bitmap space mein map hote hain. */
     RectF getBitmapVisibleRect() {
-        return new RectF(zc.getVisible());
+        RectF vis = zc.getVisible();
+        if (bitmap == null || bitmap.isRecycled()) return vis;
+        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
+        boolean swap = ((int) Math.round(rotation) % 180) == 90;
+        int cw = swap ? bh : bw, ch = swap ? bw : bh;
+        Matrix m = new Matrix();
+        m.postTranslate(-cw / 2f, -ch / 2f);
+        m.postRotate(-rotation);
+        m.postTranslate(bw / 2f, bh / 2f);
+        float[] pts = {vis.left, vis.top, vis.right, vis.top, vis.right, vis.bottom, vis.left, vis.bottom};
+        m.mapPoints(pts);
+        float minX = Math.min(Math.min(pts[0], pts[2]), Math.min(pts[4], pts[6]));
+        float maxX = Math.max(Math.max(pts[0], pts[2]), Math.max(pts[4], pts[6]));
+        float minY = Math.min(Math.min(pts[1], pts[3]), Math.min(pts[5], pts[7]));
+        float maxY = Math.max(Math.max(pts[1], pts[3]), Math.max(pts[5], pts[7]));
+        return new RectF(Math.max(0f, minX), Math.max(0f, minY),
+                Math.min(bw, maxX), Math.min(bh, maxY));
     }
 
     /** Keep ZoomController's content = ROTATED bitmap dims (its maxZoom/pan/visible math needs it). */
@@ -171,6 +196,23 @@ final class ZoomableImageView extends View {
         boolean swap = ((int) Math.round(rotation) % 180) == 90;
         int bw = bitmap.getWidth(), bh = bitmap.getHeight();
         zc.setContent(swap ? bh : bw, swap ? bw : bh);
+        syncZcBase();                  // v2.4.8: base bhi mode/rotation ke hisaab se
+    }
+
+    /** v2.4.8 FIX (auto-zoom jump ka asli jarr): ZC ka base = host ka ASLI display base.
+     *  ZC hamesha FIT-min base maanta tha, lekin drawing FILL (max) / 1:1 (1) use karti
+     *  hai — FILL/1:1 mein ZC ka visible-rect ghalat → settled sharp-crop ghalat region
+     *  ka → har settle par zoom jump. Factor se dono ka base barabar. */
+    private void syncZcBase() {
+        if (bitmap == null || bitmap.isRecycled()) return;
+        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
+        boolean swap = ((int) Math.round(rotation) % 180) == 90;
+        float rw = swap ? bh : bw, rh = swap ? bw : bh;
+        int vw = getWidth(), vh = getHeight();
+        if (vw <= 0 || vh <= 0 || rw <= 0 || rh <= 0) return;
+        float fitBase = Math.min(vw / rw, vh / rh);
+        if (fitBase <= 0f) return;
+        zc.setBaseFactor(baseScale() / fitBase);
     }
 
     /** Display base for the current mode (v2.4.5 proven logic). */
@@ -190,6 +232,7 @@ final class ZoomableImageView extends View {
 
     @Override protected void onSizeChanged(int w, int h, int oldW, int oldH) {
         super.onSizeChanged(w, h, oldW, oldH);
+        updateZcContent();             // v2.4.8: view size badla → base sync (FILL/1:1 view-dependent)
         invalidate();
     }
 
