@@ -58,10 +58,15 @@ final class ColorGrade {
      * Returns a NEW bitmap (or the original reference when preset ≤ 0).  Caller owns the result.
      */
     static Bitmap grade(Bitmap src, int preset, float zoom) {
+        return grade(src, preset, zoom, true);
+    }
+
+    /** L2: vignette=false for zoomed crops (a crop is not the whole frame — no centre/edge vignette). */
+    static Bitmap grade(Bitmap src, int preset, float zoom, boolean vignette) {
         if (src == null || src.isRecycled() || preset <= 0) return src;
         float[] p = params(preset);
         float bright = p[0], contrast = p[1], sat = p[2], warm = p[3];
-        float shadow = p[4], high = p[5], vig = p[6];
+        float shadow = p[4], high = p[5], vig = vignette ? p[6] : 0f;
         float sharp = p[7] * sharpenScale(zoom);
         float denoise = zoom >= 2.0f ? 0f : 0.12f;
         int w = src.getWidth(), h = src.getHeight();

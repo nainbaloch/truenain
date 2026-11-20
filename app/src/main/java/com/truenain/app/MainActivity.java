@@ -3591,12 +3591,13 @@ public class MainActivity extends Activity {
         final Bitmap bmp = currentBitmap;
         final android.graphics.RectF vis = viewer.getBitmapVisibleRect();
         final int gen = viewer.getZcGeneration();
-        final float rot = viewer.getRotationDeg();   // L1: crop ko screen ki rotation ke hisaab se ghumana hai
+        final float screenScale = viewer.getScreenScale();   // L2: crop screen density par banta hai
         final int vw = Math.max(8, viewer.getWidth()), vh = Math.max(8, viewer.getHeight());
         // v2.4.7 BUG 1: sanity BEFORE decode — empty/inverted rect → no overlay at all
         if (vis.isEmpty() || vis.width() < 8 || vis.height() < 8
                 || vis.right <= 0 || vis.bottom <= 0
-                || vis.left >= bmp.getWidth() || vis.top >= bmp.getHeight()) return;
+                || vis.left >= bmp.getWidth() || vis.top >= bmp.getHeight()
+                || screenScale <= 0f || Float.isNaN(screenScale)) return;
         getDecoder().execute(() -> {
             try {
                 if (bmp.isRecycled()) return;
@@ -3605,36 +3606,35 @@ public class MainActivity extends Activity {
                 int r = Math.min(bmp.getWidth(), (int) Math.ceil(vis.right));
                 int b = Math.min(bmp.getHeight(), (int) Math.ceil(vis.bottom));
                 if (r - l < 8 || b - t < 8) return;   // degenerate crop → normal frame rahe
+                // L2: output size = region × screen scale, capped (RAM bound, no OOM on 4K).
+                float k = screenScale;
+                float maxPix = 2.5f * vw * vh;                       // ~2.5 screens of pixels
+                float pix = (r - l) * k * (b - t) * k;
+                if (pix > maxPix) k *= (float) Math.sqrt(maxPix / pix);
+                int dw = Math.max(8, Math.round((r - l) * k));
+                int dh = Math.max(8, Math.round((b - t) * k));
                 Bitmap region = Bitmap.createBitmap(bmp, l, t, r - l, b - t);
                 if (region == null || region.getWidth() <= 0 || region.getHeight() <= 0) return;
-                if (region == bmp) region = bmp.copy(Bitmap.Config.ARGB_8888, false);   // L1: cached frame kabhi recycle na ho
+                if (region == bmp) region = bmp.copy(Bitmap.Config.ARGB_8888, false);   // cached frame kabhi recycle na ho
                 if (region == null) return;
-                // L1 FIX (rotate black/ghalat frame): crop bitmap-space ka hai; screen par
-                // rotated frame hai — pehle crop ko wahi rotation do, phir scale karo.
-                if (Math.round(rot) % 360 != 0) {
-                    android.graphics.Matrix rm = new android.graphics.Matrix();
-                    rm.postRotate(rot);
-                    Bitmap rotated = Bitmap.createBitmap(region, 0, 0,
-                            region.getWidth(), region.getHeight(), rm, true);
-                    if (rotated != region) region.recycle();
-                    region = rotated;
-                }
-                Bitmap sharp = SharpScale.scale(region, vw, vh);
+                Bitmap sharp = SharpScale.scale(region, dw, dh);
                 region.recycle();
                 // v2.4.7 BUG 1: sharp null/invalid/recycled → overlay NAHI — normal frame rahe
                 if (sharp == null || sharp.isRecycled()
                         || sharp.getWidth() <= 0 || sharp.getHeight() <= 0) return;
-                // v2.4.6 PHASE 2: settled crop par bhi Quality Look (zoom-aware) —
-                // warna zoomed frame look ke bina raw dikhta (pack: "run Quality Look, then post")
+                // Quality Look (zoom-aware) crop par bhi; vignette NAHI (crop poora frame nahi).
                 if (frameGradePreset > 0 && viewer != null) {
-                    Bitmap graded = ColorGrade.grade(sharp, frameGradePreset, viewer.getZoom());
+                    Bitmap graded = ColorGrade.grade(sharp, frameGradePreset, viewer.getZoom(), false);
                     if (graded != null && !graded.isRecycled() && graded != sharp) {
                         sharp.recycle();
                         sharp = graded;
                     }
                 }
                 final Bitmap finalSharp = sharp;
-                ui.post(() -> { if (viewer != null) viewer.setSharpCrop(finalSharp, gen); });
+                final int fl = l, ft = t;
+                final float sx = (float) finalSharp.getWidth() / (r - l);
+                final float sy = (float) finalSharp.getHeight() / (b - t);
+                ui.post(() -> { if (viewer != null) viewer.setSharpCrop(finalSharp, gen, fl, ft, sx, sy); });
             } catch (RuntimeException rte) { /* fast path stays — normal frame dikhta rahe */ }
         });
     }

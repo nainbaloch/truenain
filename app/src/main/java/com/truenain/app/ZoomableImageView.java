@@ -28,6 +28,7 @@ final class ZoomableImageView extends View {
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Matrix matrix = new Matrix();
+    private final Matrix cropMatrix = new Matrix();   // L2
     private Bitmap bitmap;
     private int displayMode = MODE_FIT;
     private float rotation = 0f;           // total, normalized 0..360 (90-steps + fine)
@@ -35,7 +36,9 @@ final class ZoomableImageView extends View {
     // v2.4.6: single zoom engine — gestures/state; zoom/pan fed into the proven draw
     private final ZoomController zc;
     private SettledListener settledListener;
-    private Bitmap sharpCrop;              // settled bicubic sharp view (view-sized)
+    private Bitmap sharpCrop;              // L2: settled bicubic crop of a BITMAP-SPACE region (not view-sized)
+    private int sharpL, sharpT;            // L2: crop's top-left in bitmap pixels
+    private float sharpSx = 1f, sharpSy = 1f;   // L2: crop pixels per bitmap pixel
     private GestureDetector fallbackGestures;
     private float lastX, lastY;
     private float zoom = 1f, panX, panY;   // fed from ZoomController onTransform
@@ -66,9 +69,8 @@ final class ZoomableImageView extends View {
             }
             @Override public void onSettled(RectF visible, float z, int generation) {
                 if (!zc.isCurrent(generation) || !zc.isZoomed()) return;   // only when zoomed
-                // v2.4.8: tilted (fine-angle) frame par sharp overlay NAHI — bbox crop
-                // poori tarah match nahi karta → settle par jump hota tha. Seedha frame rahe.
-                if (((int) Math.round(rotation)) % 90 != 0) return;
+                // L2: crop ab bitmap-space region hai aur usi matrix se draw hota hai —
+                // tilted frame par bhi bilkul match karta hai, isliye 90-step guard hata diya.
                 if (settledListener != null) settledListener.onFrameSettled();
             }
             @Override public void onSingleTap() {
@@ -179,12 +181,17 @@ final class ZoomableImageView extends View {
     float getZoom() { return zc.getZoom(); }
 
     /** Settled sharp view (view-sized bicubic crop). Dropped automatically on the next move. */
-    void setSharpCrop(Bitmap b, int generation) {
+    void setSharpCrop(Bitmap b, int generation, int left, int top, float sx, float sy) {
         if (b != null && generation != overlayToken()) { b.recycle(); return; }   // stale (zoom ya rotation badla)
+        if (b != null && (sx <= 0f || sy <= 0f || Float.isNaN(sx) || Float.isNaN(sy))) { b.recycle(); return; }
         if (sharpCrop != null && sharpCrop != b && !sharpCrop.isRecycled()) sharpCrop.recycle();
         sharpCrop = b;
+        sharpL = left; sharpT = top; sharpSx = sx; sharpSy = sy;
         invalidate();
     }
+
+    /** L2: current on-screen scale (bitmap px -> screen px); crop is built at this density. */
+    float getScreenScale() { return baseScale() * zoom; }
 
     /** Visible area in BITMAP pixel coords (for the settled crop decode). UI-thread only.
      *  v2.4.8 FIX: ZC visible = ROTATED content coords — seedha bitmap par lagane se
@@ -271,8 +278,13 @@ final class ZoomableImageView extends View {
         matrix.postTranslate(vw / 2f + panX, vh / 2f + panY);
         c.drawBitmap(bitmap, matrix, paint);
         if (sharpCrop != null && !sharpCrop.isRecycled()) {
+            // L2: SAME matrix as the frame — crop px -> bitmap px -> screen. No stretch, no
+            // separate rotation logic: rotate/zoom/pan/tilt can never disagree with the frame.
             paint.setFilterBitmap(true);
-            c.drawBitmap(sharpCrop, null, new RectF(0, 0, vw, vh), paint);   // settled sharp overlay
+            cropMatrix.set(matrix);
+            cropMatrix.preTranslate(sharpL, sharpT);
+            cropMatrix.preScale(1f / sharpSx, 1f / sharpSy);
+            c.drawBitmap(sharpCrop, cropMatrix, paint);
         }
     }
 }
