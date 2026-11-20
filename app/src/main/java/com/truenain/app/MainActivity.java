@@ -3591,6 +3591,7 @@ public class MainActivity extends Activity {
         final Bitmap bmp = currentBitmap;
         final android.graphics.RectF vis = viewer.getBitmapVisibleRect();
         final int gen = viewer.getZcGeneration();
+        final float rot = viewer.getRotationDeg();   // L1: crop ko screen ki rotation ke hisaab se ghumana hai
         final int vw = Math.max(8, viewer.getWidth()), vh = Math.max(8, viewer.getHeight());
         // v2.4.7 BUG 1: sanity BEFORE decode — empty/inverted rect → no overlay at all
         if (vis.isEmpty() || vis.width() < 8 || vis.height() < 8
@@ -3606,6 +3607,18 @@ public class MainActivity extends Activity {
                 if (r - l < 8 || b - t < 8) return;   // degenerate crop → normal frame rahe
                 Bitmap region = Bitmap.createBitmap(bmp, l, t, r - l, b - t);
                 if (region == null || region.getWidth() <= 0 || region.getHeight() <= 0) return;
+                if (region == bmp) region = bmp.copy(Bitmap.Config.ARGB_8888, false);   // L1: cached frame kabhi recycle na ho
+                if (region == null) return;
+                // L1 FIX (rotate black/ghalat frame): crop bitmap-space ka hai; screen par
+                // rotated frame hai — pehle crop ko wahi rotation do, phir scale karo.
+                if (Math.round(rot) % 360 != 0) {
+                    android.graphics.Matrix rm = new android.graphics.Matrix();
+                    rm.postRotate(rot);
+                    Bitmap rotated = Bitmap.createBitmap(region, 0, 0,
+                            region.getWidth(), region.getHeight(), rm, true);
+                    if (rotated != region) region.recycle();
+                    region = rotated;
+                }
                 Bitmap sharp = SharpScale.scale(region, vw, vh);
                 region.recycle();
                 // v2.4.7 BUG 1: sharp null/invalid/recycled → overlay NAHI — normal frame rahe
