@@ -92,7 +92,10 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
                 panX += fx - lastFx;           // two-finger pan
                 panY += fy - lastFy;
                 lastFx = fx; lastFy = fy;
-                float nz = clamp(zoom * d.getScaleFactor(), 1f - OVER, maxZoom * (1f + OVER));
+                // v2.5.1: rubber-band OVERSHOOT HATAA — pinch hamesha 1x..maxZoom ke andar
+                // (pehle 15% bahar jata tha aur ungli uthate hi wapas animate hota tha —
+                // user ko "zoom apne aap in/out" lagta tha).
+                float nz = clamp(zoom * d.getScaleFactor(), 1f, maxZoom);
                 zoomAbout(zoom, panX, panY, nz, fx, fy);
                 dispatch(true);
                 return true;
