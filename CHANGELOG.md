@@ -6,6 +6,18 @@ APK files are attached to **Git/GitHub Releases only** — never committed to th
 
 ---
 
+## v2.6.0 (260) — zoom / pan / rotate engine REWRITE (base: v2.5.2)
+**CODE ONLY — BUILD NOT VERIFIED, DEVICE NOT VERIFIED.**
+- ZoomController: naya engine. State sirf zoom + rotation + c (content point at screen centre). Pan / matrix / visible-rect isi se nikalte hain.
+- Rotate screen centre ke gird (pehle rotate par pan jump karta tha: cxN/cyN purani orientation ke the).
+- Clamp EXACT: view-rect rotated content-rect ke andar (90-step aur fine tilt dono).
+- Player: ZC akela maalik. Purana alag content-clamp hataya (ZC se desync hota tha). maxZoom ab zoom units mein (cap / base).
+- Frame: ek hi matrix se bitmap + sharp crop; base scale rotation ke saath continuous (sin² blend, koi jump nahi).
+- Fixes: Player zoom-overlay matrix mein fine rotation shamil; slow-motion image par fine rotation; resetPlayerZoom ab engine bhi reset karta hai; Frame "Reset Zoom / Rotate" aur Settings reset ab zoom bhi reset karte hain.
+- Features / UI / package / signing: koi change nahi.
+
+---
+
 ## v2.4.7 (247) — 2026-11-20 05:12 commit (FINAL, this build)
 **What changed (zoom-matrix fix + 3 pack bug fixes):**
 - **BUG1 rotate-black**: Frame Mode rotate black-screen fix — visible-rect intersect check, settled refresh, same-rotation crop reuse

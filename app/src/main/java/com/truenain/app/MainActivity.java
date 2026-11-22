@@ -1235,24 +1235,10 @@ public class MainActivity extends Activity {
                 base = vw / Math.max(1f, fitW);
             }
         }
-        // Never shrink the underlying VideoView below its fixed viewport: that reveals
-        // empty edges and makes the border look as if it has moved.
-        float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
-        // v2.4.8: GL ko view ka ASLI zoom (total) — ek hi number view+GL dono par.
-        videoView.setLiveZoom(total);
-        // v2.4.8: ek hi cap — ZC ka maxZoom bhi isi source-pixel cap par (warna ZC zoom
-        // aage barhta rahta hai aur view ruk jata hai → pinch ke baad jump).
-        if (playerZc != null && Math.abs(maxPlayerZoom() - playerZc.getMaxZoom()) > 0.01f)
-            playerZc.setMaxZoom(maxPlayerZoom());
-        videoView.setScaleX(total);
-        videoView.setScaleY(total);
-        videoView.setRotation(playerContentRotation + playerFineRotation);   // v2.4.4: 90-steps + fine angle
+        // v2.6.0: EK engine. Content = fitted video rect (view px), rotation = 90-steps + fine.
+        // ZoomController zoom/pan/clamp ka akela maalik hai — yahan sirf uski state VideoView par
+        // lagti hai (pehle yahan alag clamp tha jo ZC se desync hota tha → pan/zoom jump).
         float w = videoView.getWidth(), h = videoView.getHeight();
-        // Scale is applied only to video content; navigation controls never transform.
-        // Prevent empty gaps outside the fixed viewport when zooming/panning.
-        // Content-based pan clamp: pan video ke ASLI edges tak hi — zoom+pan par
-        // black area nazar nahi aayega (pehle container-based clamp tha jis se
-        // letterbox/band ke bahar pan karke black aata tha — user complaint).
         int cw = Math.round(w), ch = Math.round(h);
         if (uiSource != null && uiSource.width > 0 && uiSource.height > 0) {
             boolean swap = uiSource.rotation == 90 || uiSource.rotation == 270;
@@ -1263,17 +1249,35 @@ public class MainActivity extends Activity {
             if (videoAspect > viewAspect) { cw = Math.round(w); ch = Math.max(1, Math.round(w / videoAspect)); }
             else { ch = Math.round(h); cw = Math.max(1, Math.round(h * videoAspect)); }
         }
-        float rotatedW = (playerContentRotation % 180 == 0) ? cw : ch;
-        float rotatedH = (playerContentRotation % 180 == 0) ? ch : cw;
-        float maxX = Math.max(0f, (rotatedW * total - w) * 0.5f);
-        float maxY = Math.max(0f, (rotatedH * total - h) * 0.5f);
-        playerPanX = Math.max(-maxX, Math.min(maxX, playerPanX));
-        playerPanY = Math.max(-maxY, Math.min(maxY, playerPanY));
+        float total;
+        float panX, panY;
+        if (playerZc != null && w > 0 && h > 0) {
+            // Underlying VideoView viewport se neeche kabhi shrink nahi (total >= 1).
+            float baseScale = Math.max(1f, base);
+            playerZc.setContent(Math.max(1, cw), Math.max(1, ch));
+            playerZc.setRotation(playerContentRotation + playerFineRotation);
+            playerZc.setBaseScale(baseScale);
+            // ek hi cap: total <= maxPlayerZoom() (zoom units = cap / base)
+            playerZc.setMaxZoom(Math.max(1f, maxPlayerZoom() / baseScale));
+            playerZoom = playerZc.getZoom();
+            total = Math.max(1f, Math.min(maxPlayerZoom(), playerZc.getScale()));
+            panX = playerZc.getPanX();
+            panY = playerZc.getPanY();
+        } else {
+            total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
+            panX = playerPanX; panY = playerPanY;
+        }
+        playerPanX = panX; playerPanY = panY;
+        // GL ko view ka ASLI zoom (total) — ek hi number view+GL dono par.
+        videoView.setLiveZoom(total);
+        videoView.setScaleX(total);
+        videoView.setScaleY(total);
+        videoView.setRotation(playerContentRotation + playerFineRotation);   // 90-steps + fine angle
         videoView.setTranslationX(playerPanX);
         videoView.setTranslationY(playerPanY);
         if (slowImage != null) {
             slowImage.setScaleX(total); slowImage.setScaleY(total);
-            slowImage.setRotation(playerContentRotation);
+            slowImage.setRotation(playerContentRotation + playerFineRotation);   // v2.6.0: fine angle bhi
             slowImage.setTranslationX(playerPanX); slowImage.setTranslationY(playerPanY);
         }
         playerTotalScale = total;
@@ -1294,6 +1298,7 @@ public class MainActivity extends Activity {
     }
 
     private void resetPlayerZoom() {
+        if (playerZc != null) playerZc.reset(false);   // v2.6.0: engine ki state bhi reset (pehle sirf fields reset hote the)
         playerZoom = 1f;
         playerPanX = playerPanY = 0f;
         playerTotalScale = 1f;
@@ -1759,16 +1764,8 @@ public class MainActivity extends Activity {
         // oldPlayerTouch = fallback (tap, ±5s double-tap, scrub, brightness/volume).
         playerZc = new ZoomController(this, touch, new ZoomController.Listener() {
             @Override public void onTransform(Matrix m, float zoom, boolean interacting) {
+                // v2.6.0: pan/zoom ZC ki state se applyPlayerViewTransform() khud parhta hai
                 playerZoom = zoom;
-                // v2.4.8: setLiveZoom ab applyPlayerViewTransform mein lagta hai — GL ko
-                // VIEW par lagne wala ASLI total milta hai (pehle ZC ka raw zoom jata tha
-                // — cap/base hone par dono alag numbers → bicubic/sharpen ghalat level
-                // par switch hota tha). Ab GL aur view ek hi number par.
-                float[] vals = new float[9];
-                m.getValues(vals);
-                // ZC matrix: MTRANS = vw/2 + pan − (view-size content)·zoom/2 → pan wapas
-                playerPanX = vals[Matrix.MTRANS_X] + (touch.getWidth() * zoom) / 2f - touch.getWidth() / 2f;
-                playerPanY = vals[Matrix.MTRANS_Y] + (touch.getHeight() * zoom) / 2f - touch.getHeight() / 2f;
                 applyPlayerViewTransform();
             }
             @Override public void onSettled(android.graphics.RectF visible, float zoom, int generation) {
@@ -1787,7 +1784,7 @@ public class MainActivity extends Activity {
         playerZc.setFallback(oldPlayerTouch);
         touch.setOnTouchListener(playerZc);
         touch.setOnGenericMotionListener(playerZc);
-        touch.post(() -> { if (playerZc != null) playerZc.setContent(touch.getWidth(), touch.getHeight()); });
+        touch.post(() -> applyPlayerViewTransform());   // v2.6.0: content/rotation/base ZC ko apply se milte hain
         p.addView(touch, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -2125,7 +2122,9 @@ public class MainActivity extends Activity {
                     resetPlayerZoom();
                     if (viewer != null) {
                         viewer.setDisplayMode(displayMode);
-                        viewer.setDisplayRotation(0);   // andar resetZoom + invalidate
+                        viewer.setDisplayRotation(0);
+                        viewer.setFineRotation(0f);
+                        viewer.resetZoom();   // v2.6.0: zoom bhi reset
                     }
                     refreshControls();
                     Toast.makeText(this, "Settings reset — sab default ho gaya", Toast.LENGTH_SHORT).show();
@@ -2503,7 +2502,7 @@ public class MainActivity extends Activity {
         m.postScale(s0, s0);
         m.postTranslate((vw - srcW * s0) / 2f, (vh - srcH * s0) / 2f);
         m.postScale(total, total, vw / 2f, vh / 2f);
-        m.postRotate(playerContentRotation, vw / 2f, vh / 2f);
+        m.postRotate(playerContentRotation + playerFineRotation, vw / 2f, vh / 2f);   // v2.6.0: fine angle bhi
         m.postTranslate(playerPanX, playerPanY);
         return m;
     }
@@ -3315,7 +3314,7 @@ public class MainActivity extends Activity {
         views.add("Reset Zoom / Rotate").setOnMenuItemClickListener(i -> {
             displayRotation = 0;
             frameFineRotation = 0f;
-            if (viewer != null) viewer.setDisplayRotation(0);   // andar resetZoom + invalidate — zoom bhi reset
+            if (viewer != null) { viewer.setDisplayRotation(0); viewer.setFineRotation(0f); viewer.resetZoom(); }   // v2.6.0: zoom bhi reset
             return true;
         });
         // v2.4.4 (user request): tirchhi videos ko FREE angle par seedha karne ka option.

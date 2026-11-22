@@ -16,36 +16,48 @@ import android.view.animation.DecelerateInterpolator;
 import android.widget.OverScroller;
 
 /**
- * TRUE NAIN ZoomController: one zoom/pan engine for Media Player AND Frame mode.
+ * TRUE NAIN ZoomController v2.6.0 — ONE zoom / pan / rotate engine for Frame mode AND Player.
  *
- * HOW TO USE (3 steps):
- *  1. ZoomController zc = new ZoomController(context, targetView, listener);
- *     targetView.setOnTouchListener(zc); targetView.setOnGenericMotionListener(zc);
- *  2. After the video/frame is known (and after every rotation change):
- *     zc.setContent(displayedSourceWidth, displayedSourceHeight);   // real source pixels, AFTER rotation
- *  3. In Listener.onTransform apply the matrix (ImageView with ScaleType.MATRIX: iv.setImageMatrix(m);
- *     for GL / TextureView use the same matrix in your renderer).
- *     In Listener.onSettled render the SHARP full-resolution crop of 'visible' (source pixel rect),
- *     then show it. Ignore the result if zc.isCurrent(generation) is false (stale-frame protection).
+ * ENGINE KA MODEL (seedha, ek hi sach):
+ *   Sirf 3 cheezein state hain:  zoom,  rotation (degrees),  c = (cx, cy).
+ *   c = "content ka wo point jo SCREEN KE CENTRE par hai", content ke apne axes mein,
+ *       content centre se pixel offset (content px).
+ *   Pan / matrix / visible-rect sab isi se NIKALTE hain — kabhi alag store nahi hote,
+ *   is liye rotate / resize / zoom / pan aapas mein kabhi desync nahi ho sakte.
  *
- * Fast path while fingers move, sharp path 300 ms after you stop.
- * If you already have your own single-finger gestures (seek swipe etc.), pass them with
- * zc.setFallback(oldTouchListener): they keep working when NOT zoomed in; when zoomed, one finger pans.
+ *   screen scale   s   = baseScale * zoom
+ *   pan (view px)      = - R(rotation) * c * s            (content centre ka screen-centre se offset)
+ *   matrix (content -> view) = T(-cw/2,-ch/2) -> R(rotation) -> S(s) -> T(vw/2+panX, vh/2+panY)
  *
- * STATUS: written without the Android SDK. CODE ONLY, BUILD NOT VERIFIED, DEVICE NOT VERIFIED.
+ *   Rotation SCREEN CENTRE ke gird hoti hai: jo point screen ke beech mein hai wahi beech
+ *   mein rehta hai (purana bug: rotate par pan jump karta tha).
+ *   Clamp EXACT hai: poora view-rect rotated content-rect ke andar rehta hai (tilt par bhi).
+ *
+ * HOST KE LIYE 4 STEP:
+ *   1. zc = new ZoomController(ctx, view, listener); view.setOnTouchListener(zc);
+ *   2. zc.setContent(w, h)        — content ka size (Frame: bitmap w,h UNROTATED; Player: fitted video rect, view px)
+ *   3. zc.setRotation(deg)        — total rotation (90-steps + fine)
+ *      zc.setBaseScale(s)         — zoom==1 par screen scale (FIT / FILL / 1:1 host decide karta hai)
+ *   4. onTransform mein zc.getMatrix() / getPanX() / getPanY() / getScale() lagao.
+ *      onSettled mein zc.getVisible() (content px) se sharp crop banao; zc.isCurrent(gen) check karo.
+ *
+ * NOTE: setContent / setRotation / setBaseScale / setMaxZoom KHAMOSH (silent) hain — listener ko
+ * call nahi karte (host khud apply ke beech mein hota hai → recursion nahi). Host in ke baad
+ * getters se state parh kar khud draw/invalidate kare.
+ *
+ * STATUS: Android SDK ke baghair likha. CODE ONLY — BUILD NOT VERIFIED, DEVICE NOT VERIFIED.
  */
 public final class ZoomController implements View.OnTouchListener, View.OnGenericMotionListener {
 
     public interface Listener {
-        /** Every change. m maps source pixels (0..contentW, 0..contentH) to view pixels. */
+        /** Har change. m = content px -> view px (rotation shamil). */
         void onTransform(Matrix m, float zoom, boolean interacting);
-        /** ~300 ms after the last change. 'visible' = visible area in source pixels. Render the sharp crop here. */
+        /** ~300 ms baad. 'visible' = content px mein dikhne wala AABB. Sharp crop yahan banao. */
         void onSettled(RectF visible, float zoom, int generation);
         default void onSingleTap() {}
     }
 
     private static final float DOUBLE_TAP_ZOOM = 2.5f;
-    private static final float OVER = 0.15f;      // rubber-band allowance while pinching
     private static final long SETTLE_MS = 300;
 
     private final View host;
@@ -60,18 +72,20 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
     private View.OnTouchListener fallback;
     private ValueAnimator anim;
 
-    private float vw, vh;            // view size
-    private float cw, ch;            // content size in source pixels (after rotation)
-    private float base = 1f;         // fit-to-view scale
-    private float baseFactor = 1f;   // v2.4.8: host display-base multiplier (Frame FILL/1:1)
-    private float zoom = 1f;         // 1 = fit
+    private float vw, vh;               // view size
+    private float cw, ch;               // content size (host ke units; rotate hone se PEHLE ka)
+    private float rotDeg = 0f;          // total rotation, 0..360
+    private float cos = 1f, sin = 0f;   // rotation ka cos/sin (exact multiples of 90 snap)
+    private float baseScale = 0f;       // host-set absolute scale at zoom==1 (0 = auto fit)
+    private float zoom = 1f;            // 1..maxZoom
     private float maxZoom = 8f;
-    private Float overrideMaxZoom = null;   // v2.4.8: host-set cap (Player maxPlayerZoom) — relayout par bhi barkarar
-    private float panX, panY;        // offset of content centre from view centre, in view px
-    private float cxN = 0.5f, cyN = 0.5f; // content point at view centre (0..1), survives rotation/resize
+    private Float overrideMaxZoom = null;
+    private float cx, cy;               // content point at screen centre (content px from content centre)
     private float lastFx, lastFy;
+    private float flingScale = 1f;
     private boolean pinching, dragging;
     private int generation;
+    private boolean doubleTapZoomEnabled = true;
 
     public ZoomController(Context ctx, View host, Listener listener) {
         this.host = host;
@@ -89,20 +103,17 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
             }
             @Override public boolean onScale(ScaleGestureDetector d) {
                 float fx = d.getFocusX() - vw / 2f, fy = d.getFocusY() - vh / 2f;
-                panX += fx - lastFx;           // two-finger pan
-                panY += fy - lastFy;
+                panByScreen(fx - lastFx, fy - lastFy);          // do-ungli pan
                 lastFx = fx; lastFy = fy;
-                // v2.5.1: rubber-band OVERSHOOT HATAA — pinch hamesha 1x..maxZoom ke andar
-                // (pehle 15% bahar jata tha aur ungli uthate hi wapas animate hota tha —
-                // user ko "zoom apne aap in/out" lagta tha).
-                float nz = clamp(zoom * d.getScaleFactor(), 1f, maxZoom);
-                zoomAbout(zoom, panX, panY, nz, fx, fy);
+                // pinch hamesha 1x..maxZoom ke andar (rubber-band overshoot nahi)
+                zoomAbout(clamp(zoom * d.getScaleFactor(), 1f, maxZoom), fx, fy);
                 dispatch(true);
                 return true;
             }
             @Override public void onScaleEnd(ScaleGestureDetector d) {
                 pinching = false;
-                settleBounds();
+                clampC();
+                dispatch(false);
             }
         });
         scaleDetector.setQuickScaleEnabled(false);
@@ -111,24 +122,31 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onSingleTapConfirmed(MotionEvent e) { listener.onSingleTap(); return true; }
             @Override public boolean onDoubleTap(MotionEvent e) {
-                if (!doubleTapZoomEnabled) return false;   // v2.4.6: approved double-tap features keep working
-                float fx = e.getX() - vw / 2f, fy = e.getY() - vh / 2f;
-                animateZoom(nextDoubleTapLevel(), fx, fy, 240);
+                if (!doubleTapZoomEnabled) return false;   // approved double-tap features (Player ±5s, Frame ±1 frame)
+                animateZoom(nextDoubleTapLevel(), e.getX() - vw / 2f, e.getY() - vh / 2f, 240);
                 return true;
             }
             @Override public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
                 if (pinching || zoom <= 1.001f) return false;
                 dragging = true;
                 generation++;
-                panX -= dx; panY -= dy;
-                clampPan(zoom);
+                panByScreen(-dx, -dy);
+                clampC();
                 dispatch(true);
                 return true;
             }
             @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float vx, float vy) {
                 if (pinching || zoom <= 1.001f) return false;
-                int lx = (int) limX(zoom), ly = (int) limY(zoom);
-                scroller.fling((int) panX, (int) panY, (int) vx, (int) vy, -lx, lx, -ly, ly);
+                float s = scale();
+                if (s <= 0f) return false;
+                // Fling content-axes mein (u = c*s): screen velocity -> content axes, ulta (content finger se ulta chalta hai)
+                float ux = cx * s, uy = cy * s;
+                float vux = -(vx * cos + vy * sin);
+                float vuy = -(-vx * sin + vy * cos);
+                int lx = (int) limU(true, s), ly = (int) limU(false, s);
+                flingScale = s;
+                scroller.fling(clampInt(Math.round(ux), -lx, lx), clampInt(Math.round(uy), -ly, ly),
+                        (int) vux, (int) vuy, -lx, lx, -ly, ly);
                 host.postOnAnimation(flingTask);
                 return true;
             }
@@ -142,55 +160,66 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
 
     public void setFallback(View.OnTouchListener f) { fallback = f; }
 
-    /** v2.4.6 integration flag (pack rule 10, safest option): double-tap is already
-     *  used by approved features (Player = ±5s seek, Frame = ±1 frame step).  Set
-     *  false so ZoomController's zoom-cycle double-tap stays off and the old
-     *  double-tap handler keeps working via the fallback listener. */
-    private boolean doubleTapZoomEnabled = true;
+    /** Double-tap pehle se approved features use karte hain (Player ±5s, Frame ±1 frame) → default OFF rakho. */
     public void setDoubleTapZoomEnabled(boolean on) { doubleTapZoomEnabled = on; }
 
-    /** Displayed content size in SOURCE pixels, after rotation. Call again when rotation or video changes.
-     *  v2.4.7 BUG 2: no-op when unchanged (prevents relayout/settle loops). */
+    /** Content size (rotate hone se PEHLE ka). Same size par no-op. Size badle to c proportional rehta hai. */
     public void setContent(int srcW, int srcH) {
-        if (srcW == cw && srcH == ch && cw > 0) return;
-        cw = srcW; ch = srcH; relayout();
-    }
-
-    /** v2.4.8 FIX (auto-zoom jump ka asli jarr): host ka ASLI display base factor.
-     *  ZC hamesha FIT-min base maanta tha, lekin Frame drawing FILL (max) / 1:1 (1)
-     *  base use karti hai — FILL/1:1 mein ZC ka visible-rect GHALAT banta tha →
-     *  settled sharp-crop ghalat region ka → har settle par zoom jump
-     *  (user: "zoom apne aap in/out"). Factor lagane par dono ka base barabar. */
-    public void setBaseFactor(float f) {
-        if (f <= 0f || Float.isNaN(f) || Float.isInfinite(f)) f = 1f;
-        if (Math.abs(f - baseFactor) < 0.0001f) return;
-        baseFactor = f;
+        if (srcW <= 0 || srcH <= 0) return;
+        if (srcW == cw && srcH == ch) return;
+        if (cw > 0 && ch > 0) { cx *= srcW / cw; cy *= srcH / ch; }
+        cw = srcW; ch = srcH;
+        generation++;                    // purana async crop stale
         relayout();
     }
 
-    /** v2.4.8: host-set zoom cap (Player = maxPlayerZoom) — relayout par bhi barkarar,
-     *  warna har layout change generic rule se cap overwrite ho jata tha. */
+    /** Total rotation (degrees). Screen centre ke gird: beech wala point beech mein rehta hai. */
+    public void setRotation(float deg) {
+        float nr = ((deg % 360f) + 360f) % 360f;
+        if (Math.abs(nr - rotDeg) < 0.0001f) return;
+        rotDeg = nr;
+        double r = Math.toRadians(nr);
+        cos = snap((float) Math.cos(r));
+        sin = snap((float) Math.sin(r));
+        stopMotion();
+        generation++;                    // purana async crop stale
+        relayout();
+        scheduleSettle();                // rotation ke baad sharp crop dobara (agar zoomed)
+    }
+
+    /** zoom==1 par absolute screen scale (FIT/FILL/1:1 — host decide karta hai). 0 = auto-fit. */
+    public void setBaseScale(float s) {
+        if (Float.isNaN(s) || Float.isInfinite(s) || s < 0f) s = 0f;
+        if (Math.abs(s - baseScale) < 0.00001f) return;
+        baseScale = s;
+        generation++;                    // purana async crop stale (visible area badal gayi)
+        relayout();
+    }
+
+    /** Host-set zoom cap (zoom units). */
     public void setMaxZoom(float m) {
         if (Float.isNaN(m) || Float.isInfinite(m)) return;
         float nm = clamp(m, 1f, 12f);
         if (overrideMaxZoom != null && Math.abs(nm - overrideMaxZoom) < 0.0001f) return;
         overrideMaxZoom = nm;
-        if (Math.abs(nm - maxZoom) < 0.0001f) return;
-        maxZoom = nm;
-        zoom = clamp(zoom, 1f, maxZoom);
-        clampPan(zoom);
-        dispatchQuiet();
+        relayout();
     }
 
     public void zoomIn()  { zoomBy(1.5f); }
     public void zoomOut() { zoomBy(1f / 1.5f); }
     public void zoomBy(float factor) { animateZoom(zoom * factor, 0, 0, 180); }
+
+    /** Zoom 1x + content centre par. (Rotation reset nahi hoti — host alag karta hai.) */
     public void reset(boolean animate) {
-        if (animate) animateZoom(1f, 0, 0, 220);
-        else { stopMotion(); zoom = 1f; panX = panY = 0; cxN = cyN = 0.5f; dispatch(false); }
+        if (animate) { animateReset(220); return; }
+        stopMotion();
+        generation++;
+        zoom = 1f; cx = cy = 0f;
+        clampC();
+        dispatch(false);
     }
 
-    /** L1: view detach hone par pending settle/animation band (leak + late callback se bachao). */
+    /** View detach: pending settle/animation band. */
     public void destroy() {
         handler.removeCallbacks(settleTask);
         stopMotion();
@@ -199,25 +228,33 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
 
     public float getZoom() { return zoom; }
     public float getMaxZoom() { return maxZoom; }
-    /** Zoom level where 1 source pixel = 1 screen pixel. */
-    public float pixelPerfectZoom() { return base > 0 ? 1f / base : 1f; }
+    /** Ab ka asli screen scale (content px -> view px). */
+    public float getScale() { return scale(); }
+    /** View centre se content centre ka offset, view px (View.setTranslationX/Y ke barabar). */
+    public float getPanX() { return -(cx * cos - cy * sin) * scale(); }
+    public float getPanY() { return -(cx * sin + cy * cos) * scale(); }
+    public float getRotation() { return rotDeg; }
+    /** Zoom jahan 1 content px = 1 screen px. */
+    public float pixelPerfectZoom() { float b = base(); return b > 0 ? 1f / b : 1f; }
     public boolean isZoomed() { return zoom > 1.001f; }
     public boolean isCurrent(int gen) { return gen == generation; }
-    /** Current generation (v2.4.6: stale-guard for async settled crops). */
     public int getGeneration() { return generation; }
+    /** content px -> view px (rotation shamil). */
     public Matrix getMatrix() { return matrix; }
-    /** Visible content rect in content pixels (v2.4.6: settled-crop decoding needs it). */
+    /** Visible area ka AABB, content px mein (content ke andar clamp). */
     public RectF getVisible() { return new RectF(visible); }
 
     public Bundle saveState() {
         Bundle b = new Bundle();
-        b.putFloat("z", zoom); b.putFloat("cx", cxN); b.putFloat("cy", cyN);
+        b.putFloat("z", zoom); b.putFloat("cx", cx); b.putFloat("cy", cy); b.putFloat("rot", rotDeg);
         return b;
     }
     public void restoreState(Bundle b) {
         if (b == null) return;
-        zoom = b.getFloat("z", 1f); cxN = b.getFloat("cx", 0.5f); cyN = b.getFloat("cy", 0.5f);
+        zoom = b.getFloat("z", 1f); cx = b.getFloat("cx", 0f); cy = b.getFloat("cy", 0f);
+        setRotation(b.getFloat("rot", rotDeg));
         relayout();
+        dispatch(false, false);
     }
 
     // ---------------------------------------------------------------- touch
@@ -232,7 +269,7 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
 
         if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
             dragging = false;
-            if (!pinching) { clampPan(zoom); dispatch(false); }
+            if (!pinching) { clampC(); dispatch(false); }
         }
         if (zoom > 1.001f || pinching || e.getPointerCount() > 1) {
             if (host.getParent() != null) host.getParent().requestDisallowInterceptTouchEvent(true);
@@ -251,43 +288,102 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         return false;
     }
 
-    // ---------------------------------------------------------------- internals
+    // ---------------------------------------------------------------- core math
 
-    private void setViewSize(int w, int h) {
-        if (w == vw && h == vh) return;                     // v2.4.7 BUG 2: no change → no relayout loop
-        vw = w; vh = h; relayout();
+    private boolean ready() { return vw > 0 && vh > 0 && cw > 0 && ch > 0; }
+
+    /** zoom==1 scale: host ka base, warna auto-fit (nearest-quadrant dims). */
+    private float base() {
+        if (baseScale > 0f) return baseScale;
+        if (!ready()) return 1f;
+        boolean swap = sin * sin >= 0.5f;
+        float rw = swap ? ch : cw, rh = swap ? cw : ch;
+        return Math.min(vw / rw, vh / rh);
+    }
+
+    private float scale() { return base() * zoom; }
+
+    /** view-rect ko content-rect ke andar rakhne ki EXACT limit (content axes, screen px units: u = c*s). */
+    private float limU(boolean xAxis, float s) {
+        float ac = Math.abs(cos), as = Math.abs(sin);
+        float v = xAxis ? cw * s / 2f - (ac * vw / 2f + as * vh / 2f)
+                        : ch * s / 2f - (as * vw / 2f + ac * vh / 2f);
+        return Math.max(0f, v);
+    }
+
+    private void clampC() {
+        float s = scale();
+        if (s <= 0f || !ready()) return;
+        float lx = limU(true, s) / s, ly = limU(false, s) / s;
+        cx = clamp(cx, -lx, lx);
+        cy = clamp(cy, -ly, ly);
+    }
+
+    /** Pan screen-space delta (px) — content finger ke saath chalta hai. */
+    private void panByScreen(float dx, float dy) {
+        float s = scale();
+        if (s <= 0f) return;
+        cx -= (dx * cos + dy * sin) / s;
+        cy -= (-dx * sin + dy * cos) / s;
+    }
+
+    /** Focus point (fx,fy = screen centre se offset) ke neeche wala content point fixed rakh kar zoom. */
+    private void zoomAbout(float z1, float fx, float fy) {
+        float s0 = scale();
+        float qx = fx * cos + fy * sin, qy = -fx * sin + fy * cos;   // R(-rot) f
+        zoom = z1;
+        float s1 = scale();
+        if (s0 > 0f && s1 > 0f) {
+            cx += qx / s0 - qx / s1;
+            cy += qy / s0 - qy / s1;
+        }
+        clampC();
+    }
+
+    private void recomputeMax() {
+        if (overrideMaxZoom != null) {
+            maxZoom = clamp(overrideMaxZoom, 1f, 12f);
+        } else {
+            boolean swap = sin * sin >= 0.5f;
+            float rw = swap ? ch : cw;
+            maxZoom = clamp((rw / vw) * 2.5f, 4f, 12f);
+        }
+        maxZoom = Math.max(maxZoom, Math.min(12f, pixelPerfectZoom()));   // 1:1 hamesha allowed
     }
 
     private void relayout() {
-        if (vw <= 0 || vh <= 0 || cw <= 0 || ch <= 0) return;
-        base = Math.min(vw / cw, vh / ch) * baseFactor;     // v2.4.8: host display base
-        maxZoom = overrideMaxZoom != null
-                ? clamp(overrideMaxZoom, 1f, 12f)           // v2.4.8: host cap barkarar
-                : clamp((cw / vw) * 2.5f, 4f, 12f);         // same rule as v2.4.5
-        maxZoom = Math.max(maxZoom, Math.min(12f, pixelPerfectZoom()));  // always allow 1:1
-        zoom = clamp(zoom, 1f, maxZoom);                    // v2.4.7: only clamped if over max — zoom stays stable
-        float s = base * zoom;
-        panX = -(cxN - 0.5f) * cw * s;
-        panY = -(cyN - 0.5f) * ch * s;
-        clampPan(zoom);
-        dispatchQuiet();                                    // v2.4.7 BUG 2: relayout NEVER schedules a settle
+        if (!ready()) return;
+        recomputeMax();
+        zoom = clamp(zoom, 1f, maxZoom);
+        clampC();
+        rebuild();
     }
 
-    private float limX(float z) { return Math.max(0f, (cw * base * z - vw) / 2f); }
-    private float limY(float z) { return Math.max(0f, (ch * base * z - vh) / 2f); }
+    /** Matrix + visible rect state se dobara banao (listener ko call nahi). */
+    private void rebuild() {
+        float s = scale();
+        if (s <= 0f || !ready()) return;
+        float panX = -(cx * cos - cy * sin) * s;
+        float panY = -(cx * sin + cy * cos) * s;
+        matrix.reset();
+        matrix.postTranslate(-cw / 2f, -ch / 2f);
+        matrix.postRotate(rotDeg);
+        matrix.postScale(s, s);
+        matrix.postTranslate(vw / 2f + panX, vh / 2f + panY);
 
-    private void clampPan(float z) {
-        panX = clamp(panX, -limX(z), limX(z));
-        panY = clamp(panY, -limY(z), limY(z));
+        float ac = Math.abs(cos), as = Math.abs(sin);
+        float hx = (ac * vw / 2f + as * vh / 2f) / s;
+        float hy = (as * vw / 2f + ac * vh / 2f) / s;
+        float ccx = cw / 2f + cx, ccy = ch / 2f + cy;
+        visible.set(clamp(ccx - hx, 0f, cw), clamp(ccy - hy, 0f, ch),
+                    clamp(ccx + hx, 0f, cw), clamp(ccy + hy, 0f, ch));
     }
 
-    /** Keeps the content point under (fx,fy) fixed while zooming from z0 to z1. fx,fy relative to view centre. */
-    private void zoomAbout(float z0, float px0, float py0, float z1, float fx, float fy) {
-        float r = z1 / z0;
-        zoom = z1;
-        panX = fx - (fx - px0) * r;
-        panY = fy - (fy - py0) * r;
-        clampPan(z1);
+    private void setViewSize(int w, int h) {
+        if (w == vw && h == vh) return;           // no change → no relayout loop
+        vw = w; vh = h;
+        relayout();
+        if (ready()) listener.onTransform(matrix, zoom, false);   // layout badla — host ko batao (settle schedule NAHI)
     }
 
     private float nextDoubleTapLevel() {
@@ -298,19 +394,30 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         return 1f;
     }
 
+    // ---------------------------------------------------------------- animation / motion
+
     private void animateZoom(float target, float fx, float fy, long ms) {
         stopMotion();
         final float t = clamp(target, 1f, maxZoom);
-        final float z0 = zoom, px0 = panX, py0 = panY;
-        if (Math.abs(t - z0) < 0.001f) { clampPan(zoom); dispatch(false); return; }
+        final float z0 = zoom;
+        if (Math.abs(t - z0) < 0.001f) { clampC(); dispatch(false); return; }
         generation++;
         anim = ValueAnimator.ofFloat(0f, 1f);
         anim.setDuration(ms);
         anim.setInterpolator(new DecelerateInterpolator(1.6f));
+        // Focus ke neeche ka content point q — animation ke dauran fixed
+        final float s0 = scale();
+        final float qx0 = fx * cos + fy * sin, qy0 = -fx * sin + fy * cos;
+        final float cx0 = cx, cy0 = cy;
         anim.addUpdateListener(a -> {
             float f = (float) a.getAnimatedValue();
-            float z = z0 * (float) Math.pow(t / z0, f);       // smooth, geometric zoom
-            zoomAbout(z0, px0, py0, z, fx, fy);
+            zoom = z0 * (float) Math.pow(t / z0, f);          // geometric zoom
+            float s1 = scale();
+            if (s0 > 0f && s1 > 0f) {
+                cx = cx0 + qx0 / s0 - qx0 / s1;
+                cy = cy0 + qy0 / s0 - qy0 / s1;
+            }
+            clampC();
             dispatch(true);
         });
         anim.addListener(new android.animation.AnimatorListenerAdapter() {
@@ -319,10 +426,30 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         anim.start();
     }
 
-    private void settleBounds() {
-        float tz = clamp(zoom, 1f, maxZoom);
-        if (Math.abs(tz - zoom) > 0.001f) animateZoom(tz, lastFx, lastFy, 200);
-        else { clampPan(zoom); dispatch(false); }
+    /** Animated reset: zoom -> 1 AUR centre par wapas. */
+    private void animateReset(long ms) {
+        stopMotion();
+        final float z0 = zoom, cx0 = cx, cy0 = cy;
+        if (Math.abs(z0 - 1f) < 0.001f && Math.abs(cx0) < 0.5f && Math.abs(cy0) < 0.5f) {
+            reset(false);
+            return;
+        }
+        generation++;
+        anim = ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(ms);
+        anim.setInterpolator(new DecelerateInterpolator(1.6f));
+        anim.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            zoom = z0 * (float) Math.pow(1f / z0, f);
+            cx = cx0 * (1f - f);
+            cy = cy0 * (1f - f);
+            clampC();
+            dispatch(true);
+        });
+        anim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator an) { dispatch(false); }
+        });
+        anim.start();
     }
 
     private void stopMotion() {
@@ -334,8 +461,11 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
     private final Runnable flingTask = new Runnable() {
         @Override public void run() {
             if (scroller.computeScrollOffset()) {
-                panX = scroller.getCurrX(); panY = scroller.getCurrY();
-                clampPan(zoom);
+                if (flingScale > 0f) {
+                    cx = scroller.getCurrX() / flingScale;
+                    cy = scroller.getCurrY() / flingScale;
+                }
+                clampC();
                 dispatch(true);
                 host.postOnAnimation(this);
             } else dispatch(false);
@@ -350,37 +480,28 @@ public final class ZoomController implements View.OnTouchListener, View.OnGeneri
         }
     };
 
-    private void dispatch(boolean interacting) {
-        dispatch(interacting, true);
+    private void scheduleSettle() {
+        handler.removeCallbacks(settleTask);
+        handler.postDelayed(settleTask, SETTLE_MS);
     }
 
-    /** v2.4.7 BUG 2: scheduleSettle=false for relayout — layout/bitmap changes must NOT
-     *  re-trigger the 300ms settle (sharp render) → no relayout/settle loop. */
+    private void dispatch(boolean interacting) { dispatch(interacting, true); }
+
     private void dispatch(boolean interacting, boolean scheduleSettle) {
-        float s = base * zoom;
-        if (s <= 0) return;
-        matrix.reset();
-        matrix.postTranslate(-cw / 2f, -ch / 2f);
-        matrix.postScale(s, s);
-        matrix.postTranslate(vw / 2f + panX, vh / 2f + panY);
-
-        visible.set(
-            clamp(cw / 2f + (-vw / 2f - panX) / s, 0, cw),
-            clamp(ch / 2f + (-vh / 2f - panY) / s, 0, ch),
-            clamp(cw / 2f + ( vw / 2f - panX) / s, 0, cw),
-            clamp(ch / 2f + ( vh / 2f - panY) / s, 0, ch));
-        cxN = 0.5f - panX / (s * cw);
-        cyN = 0.5f - panY / (s * ch);
-
+        if (!ready()) return;
+        rebuild();
         listener.onTransform(matrix, zoom, interacting);
-        if (scheduleSettle) {
-            handler.removeCallbacks(settleTask);
-            handler.postDelayed(settleTask, SETTLE_MS);
-        }
+        if (scheduleSettle) scheduleSettle();
     }
 
-    /** Matrix/visible update WITHOUT scheduling a settle (layout changes only). */
-    private void dispatchQuiet() { dispatch(false, false); }
+    // ---------------------------------------------------------------- utils
 
+    private static float snap(float v) {
+        if (Math.abs(v) < 1e-6f) return 0f;
+        if (Math.abs(v - 1f) < 1e-6f) return 1f;
+        if (Math.abs(v + 1f) < 1e-6f) return -1f;
+        return v;
+    }
     private static float clamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+    private static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 }

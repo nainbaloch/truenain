@@ -11,14 +11,15 @@ import android.view.MotionEvent;
 import android.view.View;
 
 /**
- * Frame Mode view.  v2.4.6 FINAL: ZoomController = gesture/state engine ONLY
- * (pinch/drag/fling/wheel/settled); the DRAWING uses the PROVEN v2.4.5 matrix
- * structure (translate-center → rotate → scale → translate-view+pan) — the
- * fragile bbox/region composition that caused black/zoomed-frame bugs is GONE.
+ * Frame Mode view — v2.6.0.
  *
- * Kept owner-ordered features: single tap = controls, double-tap = ±1 frame,
- * hold = ±5 frames (ZoomController double-tap zoom disabled), FIT/FILL/1:1,
- * rotation (90-steps + fine, normalized), settled bicubic sharp crop.
+ * ZoomController = poora engine (zoom, pan, rotate, clamp, matrix, visible-rect).
+ * Ye view sirf: (1) ZC ko bitmap size + rotation + display-base (FIT/FILL/1:1) batata hai,
+ * (2) ZC ki matrix se bitmap aur settled sharp-crop DRAW karta hai.
+ * Dono ek hi matrix se draw hote hain → rotate / zoom / pan / fine-tilt kabhi diverge nahi karte.
+ *
+ * Owner-ordered features waise hi: single tap = controls, double-tap = ±1 frame,
+ * hold = ±5 frames (ZC double-tap zoom OFF), FIT/FILL/1:1, rotation (90-steps + fine).
  */
 final class ZoomableImageView extends View {
     static final int MODE_FIT = 0, MODE_FILL = 1, MODE_ONE_TO_ONE = 2;
@@ -27,50 +28,30 @@ final class ZoomableImageView extends View {
     interface SettledListener { void onFrameSettled(); }
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-    private final Matrix matrix = new Matrix();
-    private final Matrix cropMatrix = new Matrix();   // L2
+    private final Matrix cropMatrix = new Matrix();
     private Bitmap bitmap;
     private int displayMode = MODE_FIT;
     private float rotation = 0f;           // total, normalized 0..360 (90-steps + fine)
 
-    // v2.4.6: single zoom engine — gestures/state; zoom/pan fed into the proven draw
     private final ZoomController zc;
     private SettledListener settledListener;
-    private Bitmap sharpCrop;              // L2: settled bicubic crop of a BITMAP-SPACE region (not view-sized)
-    private int sharpL, sharpT;            // L2: crop's top-left in bitmap pixels
-    private float sharpSx = 1f, sharpSy = 1f;   // L2: crop pixels per bitmap pixel
+    private Bitmap sharpCrop;              // settled bicubic crop of a BITMAP-SPACE region
+    private int sharpL, sharpT;            // crop ka top-left, bitmap px
+    private float sharpSx = 1f, sharpSy = 1f;   // crop px per bitmap px
     private GestureDetector fallbackGestures;
     private float lastX, lastY;
-    private float zoom = 1f, panX, panY;   // fed from ZoomController onTransform
     private GestureActions actions;
-    private int rotationEpoch;             // L1: har rotation badalne par +1 — purana async crop reject
-
-    /** L1: zoom generation + rotation epoch ek token — dono mein se kuch badle to crop stale. */
-    private int overlayToken() { return zc.getGeneration() * 1000003 + rotationEpoch; }
 
     ZoomableImageView(Context c) {
         super(c);
         setFocusable(true);
         zc = new ZoomController(c, this, new ZoomController.Listener() {
             @Override public void onTransform(Matrix m, float z, boolean interacting) {
-                float[] vals = new float[9];
-                m.getValues(vals);
-                zoom = z;
-                // v2.4.8 FIX: ZC content = ROTATED dims — pan extraction bhi rotated dims
-                // se ho. Pehle unrotated bitmap dims use hote the → rotation 90/270 par
-                // panX/panY mein (bw−cw)·s/2 ka farq → zoom ke saath frame drift karta tha.
-                boolean swap = ((int) Math.round(rotation) % 180) == 90;
-                float cwv = bitmap != null ? (swap ? bitmap.getHeight() : bitmap.getWidth()) : 0f;
-                float chv = bitmap != null ? (swap ? bitmap.getWidth() : bitmap.getHeight()) : 0f;
-                panX = vals[Matrix.MTRANS_X] + cwv * vals[Matrix.MSCALE_X] / 2f - getWidth() / 2f;
-                panY = vals[Matrix.MTRANS_Y] + chv * vals[Matrix.MSCALE_X] / 2f - getHeight() / 2f;
-                sharpCrop = null;              // fast path while moving — sharp overlay is stale
+                dropSharpCrop();               // fast path — sharp overlay ab stale hai
                 invalidate();
             }
             @Override public void onSettled(RectF visible, float z, int generation) {
-                if (!zc.isCurrent(generation) || !zc.isZoomed()) return;   // only when zoomed
-                // L2: crop ab bitmap-space region hai aur usi matrix se draw hota hai —
-                // tilted frame par bhi bilkul match karta hai, isliye 90-step guard hata diya.
+                if (!zc.isCurrent(generation) || !zc.isZoomed()) return;   // sirf zoomed par
                 if (settledListener != null) settledListener.onFrameSettled();
             }
             @Override public void onSingleTap() {
@@ -82,7 +63,6 @@ final class ZoomableImageView extends View {
         setOnTouchListener(zc);
         setOnGenericMotionListener(zc);
 
-        // Fallback gestures: only what ZoomController does NOT own (frame-step + hold).
         fallbackGestures = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onDoubleTap(MotionEvent e) {
@@ -98,7 +78,7 @@ final class ZoomableImageView extends View {
     void setGestureActions(GestureActions a) { actions = a; }
     void setOnSettledListener(SettledListener l) { settledListener = l; }
 
-    /** Old touch logic = ZoomController fallback (runs when NOT zoomed). */
+    /** Purani touch logic = ZC fallback (jab zoomed NAHI). */
     private boolean onTouchFallback(View v, MotionEvent e) {
         fallbackGestures.onTouchEvent(e);
         switch (e.getActionMasked()) {
@@ -116,46 +96,32 @@ final class ZoomableImageView extends View {
 
     void setFrame(Bitmap b, boolean keepTransform) {
         bitmap = b;
-        sharpCrop = null;
-        updateZcContent();
+        dropSharpCrop();
+        syncZc();
         if (!keepTransform) zc.reset(false);
         invalidate();
     }
 
     void setDisplayMode(int m) {
         displayMode = m;
-        sharpCrop = null;
-        syncZcBase();                  // v2.4.8: base mode ke saath badalta hai — ZC ko batao
+        dropSharpCrop();
+        syncZc();                      // base mode ke saath badalta hai
         invalidate();
     }
 
-    /** v2.4.7 BUG 1: rotation ke baad layout settle hone par hi sharp crop refresh. */
-    private final Runnable settledRefresh = new Runnable() {
-        @Override public void run() {
-            if (zc.isZoomed() && settledListener != null) settledListener.onFrameSettled();
-        }
-    };
-
+    /** 90-step rotation. (Total rotation ka hissa — setFineRotation total deta hai.) */
     void setDisplayRotation(int r) {
-        float nr = ((r % 360) + 360) % 360;
-        if (nr != rotation) rotationEpoch++;
-        rotation = nr;
-        dropSharpCrop();               // purana overlay foran clear — normal frame dikhe
-        updateZcContent();
-        removeCallbacks(settledRefresh);
-        postDelayed(settledRefresh, 350);   // layout settle hone par hi refresh
+        rotation = ((r % 360) + 360) % 360;
+        dropSharpCrop();
+        syncZc();                      // ZC rotate karta hai + settle schedule (sharp crop refresh)
         invalidate();
     }
 
-    /** v2.4.5 fine angle (absolute total) — NORMALIZED 0..360 (no unbounded accumulation). */
+    /** Total angle (90-steps + fine) — NORMALIZED 0..360. */
     void setFineRotation(float deg) {
-        float nr = ((deg % 360) + 360) % 360;
-        if (nr != rotation) rotationEpoch++;
-        rotation = nr;
-        dropSharpCrop();               // purana overlay foran clear — normal frame dikhe
-        updateZcContent();
-        removeCallbacks(settledRefresh);
-        postDelayed(settledRefresh, 350);   // layout settle hone par hi refresh
+        rotation = ((deg % 360f) + 360f) % 360f;
+        dropSharpCrop();
+        syncZc();
         invalidate();
     }
 
@@ -169,20 +135,18 @@ final class ZoomableImageView extends View {
 
     @Override protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        removeCallbacks(settledRefresh);
         zc.destroy();
     }
 
     void zoomBy(float f) { zc.zoomBy(f); }
-    void resetZoom() { zc.reset(false); sharpCrop = null; invalidate(); }
-    /** v2.4.6: stale-guard generation for the async settled crop. */
-    int getZcGeneration() { return overlayToken(); }
-    /** v2.4.6 PHASE 2: zoom-aware look grading needs the current zoom. */
+    void resetZoom() { zc.reset(false); dropSharpCrop(); invalidate(); }
+    /** Async settled crop ka stale-guard token. */
+    int getZcGeneration() { return zc.getGeneration(); }
     float getZoom() { return zc.getZoom(); }
 
-    /** Settled sharp view (view-sized bicubic crop). Dropped automatically on the next move. */
+    /** Settled sharp view. Agli move par automatically drop ho jata hai. */
     void setSharpCrop(Bitmap b, int generation, int left, int top, float sx, float sy) {
-        if (b != null && generation != overlayToken()) { b.recycle(); return; }   // stale (zoom ya rotation badla)
+        if (b != null && generation != zc.getGeneration()) { b.recycle(); return; }   // stale
         if (b != null && (sx <= 0f || sy <= 0f || Float.isNaN(sx) || Float.isNaN(sy))) { b.recycle(); return; }
         if (sharpCrop != null && sharpCrop != b && !sharpCrop.isRecycled()) sharpCrop.recycle();
         sharpCrop = b;
@@ -190,98 +154,61 @@ final class ZoomableImageView extends View {
         invalidate();
     }
 
-    /** L2: current on-screen scale (bitmap px -> screen px); crop is built at this density. */
-    float getScreenScale() { return baseScale() * zoom; }
+    /** Ab ka on-screen scale (bitmap px -> screen px); crop isi density par banta hai. */
+    float getScreenScale() { return zc.getScale(); }
 
-    /** Visible area in BITMAP pixel coords (for the settled crop decode). UI-thread only.
-     *  v2.4.8 FIX: ZC visible = ROTATED content coords — seedha bitmap par lagane se
-     *  rotated video (90/180/270) ka crop GHALAT jagah banta tha (5–20% shift wala
-     *  masla). Ab corners R(−rotation) se bitmap space mein map hote hain. */
+    /** Visible area, BITMAP pixel coords (settled crop decode ke liye). ZC content = bitmap,
+     *  isliye rotation (90-step ya tilt) par bhi seedha sahi AABB milta hai. */
     RectF getBitmapVisibleRect() {
-        RectF vis = zc.getVisible();
-        if (bitmap == null || bitmap.isRecycled()) return vis;
-        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
-        boolean swap = ((int) Math.round(rotation) % 180) == 90;
-        int cw = swap ? bh : bw, ch = swap ? bw : bh;
-        Matrix m = new Matrix();
-        m.postTranslate(-cw / 2f, -ch / 2f);
-        m.postRotate(-rotation);
-        m.postTranslate(bw / 2f, bh / 2f);
-        float[] pts = {vis.left, vis.top, vis.right, vis.top, vis.right, vis.bottom, vis.left, vis.bottom};
-        m.mapPoints(pts);
-        float minX = Math.min(Math.min(pts[0], pts[2]), Math.min(pts[4], pts[6]));
-        float maxX = Math.max(Math.max(pts[0], pts[2]), Math.max(pts[4], pts[6]));
-        float minY = Math.min(Math.min(pts[1], pts[3]), Math.min(pts[5], pts[7]));
-        float maxY = Math.max(Math.max(pts[1], pts[3]), Math.max(pts[5], pts[7]));
-        return new RectF(Math.max(0f, minX), Math.max(0f, minY),
-                Math.min(bw, maxX), Math.min(bh, maxY));
+        if (bitmap == null || bitmap.isRecycled()) return new RectF();
+        return zc.getVisible();
     }
 
-    /** Keep ZoomController's content = ROTATED bitmap dims (its maxZoom/pan/visible math needs it). */
-    private void updateZcContent() {
+    /** ZC ko bitmap size, rotation aur display-base batao. Silent — draw hum khud invalidate karte hain. */
+    private void syncZc() {
         if (bitmap == null || bitmap.isRecycled()) return;
-        boolean swap = ((int) Math.round(rotation) % 180) == 90;
-        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
-        zc.setContent(swap ? bh : bw, swap ? bw : bh);
-        syncZcBase();                  // v2.4.8: base bhi mode/rotation ke hisaab se
+        zc.setContent(bitmap.getWidth(), bitmap.getHeight());
+        zc.setRotation(rotation);
+        zc.setBaseScale(baseScale());
     }
 
-    /** v2.4.8 FIX (auto-zoom jump ka asli jarr): ZC ka base = host ka ASLI display base.
-     *  ZC hamesha FIT-min base maanta tha, lekin drawing FILL (max) / 1:1 (1) use karti
-     *  hai — FILL/1:1 mein ZC ka visible-rect ghalat → settled sharp-crop ghalat region
-     *  ka → har settle par zoom jump. Factor se dono ka base barabar. */
-    private void syncZcBase() {
-        if (bitmap == null || bitmap.isRecycled()) return;
-        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
-        boolean swap = ((int) Math.round(rotation) % 180) == 90;
-        float rw = swap ? bh : bw, rh = swap ? bw : bh;
-        int vw = getWidth(), vh = getHeight();
-        if (vw <= 0 || vh <= 0 || rw <= 0 || rh <= 0) return;
-        float fitBase = Math.min(vw / rw, vh / rh);
-        if (fitBase <= 0f) return;
-        zc.setBaseFactor(baseScale() / fitBase);
-    }
-
-    /** Display base for the current mode (v2.4.5 proven logic). */
+    /** Display base (zoom==1 par scale). Rotation ke saath CONTINUOUS: 0°/180° par asli fit,
+     *  90°/270° par swapped fit, beech mein sin² blend — koi scale jump nahi. */
     private float baseScale() {
         if (bitmap == null || bitmap.isRecycled()) return 1f;
-        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
-        boolean swap = ((int) Math.round(rotation) % 180) == 90;
-        float rw = swap ? bh : bw, rh = swap ? bw : bh;
         int vw = getWidth(), vh = getHeight();
         if (vw <= 0 || vh <= 0) return 1f;
-        switch (displayMode) {
-            case MODE_FILL: return Math.max(vw / rw, vh / rh);
-            case MODE_ONE_TO_ONE: return 1f;
-            default: return Math.min(vw / rw, vh / rh);   // FIT
+        float bw = bitmap.getWidth(), bh = bitmap.getHeight();
+        if (displayMode == MODE_ONE_TO_ONE) return 1f;
+        float a, b;
+        if (displayMode == MODE_FILL) {
+            a = Math.max(vw / bw, vh / bh);
+            b = Math.max(vw / bh, vh / bw);
+        } else {
+            a = Math.min(vw / bw, vh / bh);
+            b = Math.min(vw / bh, vh / bw);
         }
+        double sn = Math.sin(Math.toRadians(rotation));
+        float w = (float) (sn * sn);
+        return a * (1f - w) + b * w;
     }
 
     @Override protected void onSizeChanged(int w, int h, int oldW, int oldH) {
         super.onSizeChanged(w, h, oldW, oldH);
-        updateZcContent();             // v2.4.8: view size badla → base sync (FILL/1:1 view-dependent)
+        syncZc();                      // view size badla → base dobara
         invalidate();
     }
 
     @Override protected void onDraw(Canvas c) {
         super.onDraw(c);
         if (bitmap == null || bitmap.isRecycled()) return;
-        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
-        int vw = getWidth(), vh = getHeight();
-        // v2.4.6 FINAL: PROVEN v2.4.5 matrix chain + ZoomController zoom/pan:
-        //   p → T(-bitmapC) → R(rotation) → S(base·zoom) → T(viewCenter + pan)
-        float s = baseScale() * zoom;
-        matrix.reset();
-        matrix.postTranslate(-bw / 2f, -bh / 2f);
-        matrix.postRotate(rotation);
-        matrix.postScale(s, s);
-        matrix.postTranslate(vw / 2f + panX, vh / 2f + panY);
-        c.drawBitmap(bitmap, matrix, paint);
+        // EK hi matrix: bitmap px -> T(-c) -> R(rot) -> S(base*zoom) -> T(view centre + pan)
+        Matrix m = zc.getMatrix();
+        c.drawBitmap(bitmap, m, paint);
         if (sharpCrop != null && !sharpCrop.isRecycled()) {
-            // L2: SAME matrix as the frame — crop px -> bitmap px -> screen. No stretch, no
-            // separate rotation logic: rotate/zoom/pan/tilt can never disagree with the frame.
+            // Crop usi matrix se: crop px -> bitmap px -> screen. Alag rotation logic nahi.
             paint.setFilterBitmap(true);
-            cropMatrix.set(matrix);
+            cropMatrix.set(m);
             cropMatrix.preTranslate(sharpL, sharpT);
             cropMatrix.preScale(1f / sharpSx, 1f / sharpSy);
             c.drawBitmap(sharpCrop, cropMatrix, paint);
