@@ -2213,7 +2213,15 @@ public class MainActivity extends Activity {
 
     private void setPlayerControlsVisible(boolean visible) {
         controlsVisible = visible;
-        setControlViewVisible(playerTop, visible);
+        // v2.5.2: TOP pill (⛶ ↻ 360 ⋮) HAMESHA visible — controls chhupne par bhi
+        // ↻/360/⛶ ka tap seedha button par lage (pehle top bhi chhup jati thi →
+        // chhupe controls par ↻ ka tap sirf controls dikhata tha, video ghumm ti
+        // nahi — user: "MP me rotate nh hori"). Sirf bottom bar + seek chhupte hain.
+        if (playerTop != null && playerTop.getVisibility() != View.VISIBLE) {
+            playerTop.setVisibility(View.VISIBLE);
+            playerTop.setClickable(true);
+            playerTop.setAlpha(1f);
+        }
         setControlViewVisible(playerBottom, visible);
         ui.removeCallbacks(playerControlsAutoHide);
         if (visible) schedulePlayerControlsHide();
