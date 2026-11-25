@@ -1,0 +1,246 @@
+{
+  "project": "TRUE NAIN",
+  "package": "com.truenain.app",
+  "version": "2.4.6",
+  "versionCode": 246,
+  "date": "2026-11-18",
+  "apkPath": "Desktop\\ZCode\\Apk\\TRUE_NAIN_v2.4.6_RELEASE\\TRUE_NAIN_v2.4.6_FINAL.apk",
+  "sha256": "ca79cc9fab956d9451d07359d9e0c21ba27b40e6d8c5f3a9e9198c263828c633",
+  "certificate": {
+    "fingerprint": "328c046496e1c22a93d014da6346eee2244b5889e8d5917442456b33f0a0138b",
+    "signing": "v2 key + v3 lineage"
+  },
+  "sourceBackup": "Desktop\\ZCode\\Apk\\TRUE_NAIN_V2.0_ENGINE_BACKUP_2026-11-18\\",
+  "auditDoc": "TRUE_NAIN_V2.0_ENGINE\\AUDIT_BUTTONS_FUNCTIONS_MAP.md",
+  "phoneDevice": "Samsung S9+ (adb serial: SOZHH6HQ6SBMOB4D)",
+  "emulator": "S9Plus AVD (emulator-5554, 1440x2960@540dpi, 6GB RAM)",
+  "labels": {
+    "codeReviewed": true,
+    "buildVerified": true,
+    "deviceVerified": false
+  },
+  "phases": {
+    "phase1_zoom": {
+      "status": "COMPLETE",
+      "features": [
+        "ZoomController.java integrated in BOTH modes (Player + Frame)",
+        "Pinch zoom, drag, fling, double-tap, mouse wheel",
+        "Settled (300ms) -> bicubic sharp crop (SharpScale.java Catmull-Rom)",
+        "Pan bounded by video edges, zoom limits 4x-12x, 1:1 always allowed",
+        "Zoom survives rotation, Fine Rotate, Picture Rotate, video change",
+        "Player double-tap = ±5s seek (kept from v2.4.5)",
+        "Frame double-tap = ±1 frame step (kept from v2.4.5)",
+        "Double-tap zoom disabled via flag (doubleTapZoomEnabled=false)"
+      ],
+      "filesChanged": [
+        "ZoomController.java (new, 278 lines)",
+        "ZoomableImageView.java (rewritten)",
+        "SharpScale.java (new, bicubic Catmull-Rom)",
+        "MainActivity.java (Player + Frame integration)"
+      ],
+      "labels": {
+        "codeReviewed": true,
+        "buildVerified": true,
+        "deviceVerified": false
+      }
+    },
+    "phase2_quality_look": {
+      "status": "COMPLETE",
+      "features": [
+        "ColorGrade processing order FIXED: denoise -> sharpen(zoom-aware) -> colour",
+        "Denoise: 3x3 box blend, zoom-scaled (0.18 + 0.07*zoom)",
+        "Sharpen: unsharp on DENOISED pixels, strength shrinks with zoom (1.25 - 0.09*Δ, clamp 0.35..1)",
+        "GL fragment shader: Catmull-Rom bicubic (16-tap) when uZoom > 1.3",
+        "GL lifecycle fixes: onResume->glResume(), onPause->glPause(), surface recreate->reattachPlayerSurface",
+        "Original preset (0) = EXACT original pixels (no processing)",
+        "Settled crop also gets Quality Look applied",
+        "Sharpen strength decreases with zoom (less ringing on big crops)"
+      ],
+      "filesChanged": [
+        "ColorGrade.java (3-pass reorder, zoom-aware sharpen, denoise)",
+        "GradedVideoView.java (bicubic shader, uZoom uniform, GL lifecycle)"
+      ],
+      "labels": {
+        "codeReviewed": true,
+        "buildVerified": true,
+        "deviceVerified": false
+      }
+    },
+    "phase3_seek_memory": {
+      "status": "COMPLETE",
+      "features": [
+        "Keyframe-first seek: SEEK_CLOSEST_SYNC immediate, 350ms CLOSEST exact refine",
+        "Generation guard (playerSeekGen) cancels stale refines",
+        "onDestroy -> background thread shutdown (12s ANR fix)",
+        "onTrimMemory -> frameCache.trimAll() + BitmapPool.clear()",
+        "Prefetch budget: REAL frame size (primeFrameSize w,h), not 1080p assumption",
+        "FrameCacheManager.primeFrameSize(w,h) seeds avgFrameBytes for 4K budget"
+      ],
+      "filesChanged": [
+        "MainActivity.java (seekPlayerBy, scrub, onDestroy, onTrimMemory, seekRefine)",
+        "FrameCacheManager.java (primeFrameSize, trimAll, avgFrameBytes EMA)",
+        "FrameSource.java (usage unchanged)"
+      ],
+      "labels": {
+        "codeReviewed": true,
+        "buildVerified": true,
+        "deviceVerified": false
+      }
+    }
+  },
+  "knownLimitations": [
+    "DEVICE VERIFIED = NOT DONE (pack's 03_LIVE_TEST_CHECKLIST.md = user morning test list)",
+    "Optional 'Enhanced multi-frame denoise' NOT built (pack marked optional, only behind button)",
+    "GL shader deviation documented: doubleTapZoomEnabled flag added to ZoomController (safest option per rule 10)",
+    "Emulator GL = SwiftShader (black screen) - visual tests on phone only",
+    "Phase 2 optional Enhanced multi-frame denoise NOT built (pack optional)"
+  ],
+  "features": {
+    "frame_mode": {
+      "gestures": {
+        "double_tap_left": "-1 frame",
+        "double_tap_right": "+1 frame",
+        "hold_left": "-5 frames",
+        "hold_right": "+5 frames",
+        "pinch": "zoom",
+        "drag": "pan (zoom>1)",
+        "mouse_wheel": "zoom",
+        "arrow_keys": "±1° rotation (Fine Rotate ON)"
+      },
+      "ui": {
+        "top_pill": "⛶ Fullscreen, 🎨 Look, ↻ 90° Rotate, 360 Fine Rotate, ⋮ Menu",
+        "bottom_pills": "±10 -1 ▶ +1 +10 | FPS SAVE - +",
+        "360_button": "font-proof '360' text label (not glyph)",
+        "fullscreen_hide": "nav controls auto-hide (tap to show compact)"
+      },
+      "zoom": {
+        "max": "clamp(sourceWidth/viewWidth * 2.5, 4, 12)",
+        "pixel_perfect": "always available",
+        "pan_bounds": "content-based (never shows black edges)"
+      }
+    },
+    "media_player": {
+      "gestures": {
+        "double_tap_left": "-5s seek",
+        "double_tap_right": "+5s seek",
+        "hold_left_right": "brightness/volume",
+        "horizontal_drag": "scrub (15% duration or 60s, 120ms throttle)",
+        "pinch": "zoom",
+        "drag_zoomed": "pan",
+        "wheel": "zoom",
+        "long_press": "0.5x hold-slow"
+      },
+      "ui": {
+        "top_pill": "⛶ Fullscreen, ↻ 90° Rotate, 360 Fine Rotate, ⋮ Menu",
+        "bottom_pills": "zoom -/+, 1.0x speed, 🎨 Look, 📷 Shot, ▣ Frame Mode",
+        "360_button": "font-proof '360' text label (next to ↻)",
+        "fullscreen_hide": "nav controls auto-hide (tap to show compact)"
+      },
+      "zoom": {
+        "max": "clamp(sourceWidth/viewWidth * 2.5, 4, 12)",
+        "pixel_perfect": "always available",
+        "pan_bounds": "content-based (never shows black edges)"
+      },
+      "seek": {
+        "mode": "keyframe-first (SYNC immediate) + 350ms exact CLOSEST refine",
+        "generation_guard": "playerSeekGen cancels stale refines",
+        "scrub_throttle": "120ms keyframe-sync preview, final exact on finger-up"
+      },
+      "fine_rotate": {
+        "mode": "⟲/360 button TOGGLES overlay ON/OFF",
+        "drag": "center-pivot atan2 dial, any direction",
+        "arrows": "← → = ±1°",
+        "overlay": "blocks other gestures while ON, angle pill bottom-center",
+        "arrow_keys": "←/→ = ±1°",
+        "off_keeps_angle": true
+      }
+    },
+    "frame_mode": {
+      "zoom_walk": "±10/±5 = intermediate frames walk through queue (decodeLoop displays each)",
+      "far_jumps": "delta>4 or from<0 -> requestFrame(target) direct",
+      "single_tap": "controls toggle",
+      "fine_rotate_overlay": "drag=rotate, arrows=±1°, 360 button toggles ON/OFF"
+    },
+    "extractor": {
+      "buttons": ["Export All Frames", "Custom Range/Selection", "Photo Rotate", "Video Library"]
+    },
+    "customize_controls": {
+      "keys": 13,
+      "map": {
+        "top_back": "Top Bar: Back (‹)",
+        "top_menu": "Top Bar: Menu (⋮)",
+        "player_play": "Player: Play/Pause",
+        "player_frame": "Player: Frame Shortcut",
+        "frame_nav": "Frame: Step Buttons (±1/±10)",
+        "frame_play": "Frame: Play/Pause",
+        "frame_save": "Frame: SAVE Button",
+        "frame_fps": "Frame: FPS Button",
+        "frame_zoom": "Frame: Zoom Buttons",
+        "extract_all": "Extractor: Export All",
+        "extract_custom": "Extractor: Custom Range",
+        "extract_rotate": "Extractor: Photo Rotate",
+        "extract_library": "Extractor: Library Button"
+      },
+      "not_customizable": [
+        "Player zoom −/＋",
+        "Player 1.0x speed pill",
+        "Player 🎨 Look",
+        "Player 📷 Shot",
+        "Frame 🎨 Look",
+        "Frame ↻ Rotate",
+        "Frame 360 Fine Rotate",
+        "Frame ⛶ Fullscreen",
+        "Seek rows"
+      ],
+      "reorder": "long-press -> Move Left/Right -> prefs control_orders key b_<ButtonLabel>"
+    },
+    "prefs": {
+      "control_custom": "13 bools (button visibility)",
+      "control_orders": "b_<label> int (row position)",
+      "resume_positions": "uri -> ms",
+      "library_v2": "uri_0..N (max 1000)"
+    },
+    "reset_settings": {
+      "clears": ["control_custom", "control_orders"],
+      "resets": ["look=Original", "speed=1.00x", "fps=AUTO", "view=FIT", "rotations=0", "locks=OFF", "AB=OFF", "zoom/pan/overlay=reset"],
+      "preserves": ["videos", "library", "resume_positions"]
+    },
+    "hardware_keys": {
+      "volume_up_down": "Frame mode landscape -> ±1 frame step",
+      "dpad_left_right": "Fine Rotate ON -> ±1° rotation"
+    },
+    "crash_history": {
+      "v2.4.6_first_build": {
+        "issue": "GLSL 'vec3 c' REDEFINED in fragment shader (duplicate variable)",
+        "error": "GL shader: ERROR: 0:35: 'c' : redefinition",
+        "thread": "GLThread",
+        "fix": "Removed duplicate 'vec3 c = texture2D(...)' line in fragment shader",
+        "rebuild": "BUILD SUCCESSFUL + resign -> zero crashes on emulator"
+      }
+    },
+    "source_backup": "Desktop\\ZCode\\Apk\\TRUE_NAIN_V2.0_ENGINE_BACKUP_2026-11-18\\",
+    "build_tools": {
+      "gradle": "gradlew.bat :app:assembleRelease --console=plain",
+      "sign": "sign_246.ps1 -Phase FINAL (v2 key + v3 lineage)",
+      "dex_check": "Expand-Archive + PowerShell [regex]::Matches (grep -a replacement)"
+    },
+    "phone": {
+      "device": "Samsung S9+ (SOZHH6HQ6SBMOB4D)",
+      "adb_serial": "SOZHH6HQ6SBMOB4D",
+      "status": "USB debugging ON, connected alongside emulator-5554",
+      "version_on_phone": "2.4.6 (BUGGY first build - shader crash on video open)",
+      "fixed_apk": "TRUE_NAIN_v2.4.6_FINAL.apk (rebuilt with shader fix, ca79cc9f...c8c633)",
+      "install_permission": "REQUIRED (phone-strict-read-only rule)"
+    },
+    "emulator": {
+      "name": "S9Plus",
+      "serial": "emulator-5554",
+      "resolution": "1440x2960@540dpi",
+      "ram": "6GB",
+      "cpu": "x86_64",
+      "api": "35",
+      "gl": "SwiftShader (player black screen on emulator - known limitation)",
+      "window_issue": "opens at Y=-1138 -> PowerShell MoveWindow(h,0,0,400,820) every start",
+      "notes": "Phone GL fine - visual tests MUST run on phone"
+    }
+  }

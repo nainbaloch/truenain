@@ -1,0 +1,60 @@
+plugins { id 'com.android.application' }
+
+import java.util.Properties
+
+android {
+    namespace 'com.truenain.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.truenain.app'
+        minSdk 29
+        targetSdk 35
+        versionCode 252
+        versionName '2.5.2'
+    }
+
+    def signingPropsFile = rootProject.file('keystore.properties')
+    def signingProps = new Properties()
+    def hasReleaseSigning = false
+    if (signingPropsFile.exists()) {
+        signingPropsFile.withInputStream { signingProps.load(it) }
+        def path = signingProps.getProperty('storeFile')
+        if (path != null && rootProject.file(path).exists()) {
+            hasReleaseSigning = true
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(signingProps.getProperty('storeFile'))
+                storePassword signingProps.getProperty('storePassword')
+                keyAlias signingProps.getProperty('keyAlias')
+                keyPassword signingProps.getProperty('keyPassword')
+                enableV1Signing false
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing false
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            debuggable false
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

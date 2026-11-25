@@ -1,0 +1,75 @@
+# TRUE NAIN APK - Secure .gitignore
+# ========================================
+# NEVER commit these sensitive files!
+
+# Keystore & Signing
+keystore.properties
+*.jks
+*.keystore
+*.ks
+*.p12
+*.pfx
+
+# CI/CD Environment files
+keystore.env
+*.env
+.env
+.env.local
+.env.production
+
+# Gradle & Build
+.gradle/
+build/
+*/build/
+**/build/
+*.apk
+*.aab
+*.ap_
+*.aapt
+*.dex
+
+# IDE & Editor
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+
+# OS Generated
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local configuration
+local.properties
+
+# Logs & Temp
+*.log
+*.tmp
+*.temp
+temp/
+
+# Android specific
+captures/
+.externalNativeBuild/
+*.hprof
+
+# Testing
+test-results/
+coverage/
+*.ec
+
+# Misc
+*.zip
+*.tar.gz
+*.bak
+*.backup
+
+# Videos (test recordings are NOT committed — listed in docs/TESTING.md only)
+*.mp4
+*.mov
+*.mkv
+*.avi

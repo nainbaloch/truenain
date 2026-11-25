@@ -1,0 +1,22 @@
+TRUE NAIN v1.4.1 - Build Source Candidate (14 Oct 2026)
+
+BASE: TRUE_NAIN_v1.4.1_ADVANCED_SOURCE.zip from Drive, reconstructed historically from v1.4.0 project. Not independently proven identical to existing v1.4.1 signed APK.
+
+CHANGED:
+1. Added missing root build.gradle: AGP 8.7.3.
+2. Gradle wrapper 9.6.0 -> 8.9 (compatible with AGP 8.7.3 and JDK 17).
+3. app versionCode 140 -> 141, versionName 1.4.0 -> 1.4.1. Confirm versionCode > installed APK before update installation.
+4. org.gradle.java.installations.auto-download=false: no hidden JDK downloads; use Android Studio Gradle JDK 17.
+5. Player compact bar removes redundant Trim and Speed buttons, but both functions stay under MORE (three dots) menu. Frame/View/Fullscreen retain direct access.
+6. Windows build helper; do not export private signing keys.
+
+NOT CHANGED: ExactFrameDecoder.java, FrameSource.java, TrimActivity.java, TrimExporter.java, ExactTrimTranscoder.java, bitmap algorithms, seek/FPS/30s timer, gestures, picker, zoom.
+
+BEFORE BUILD:
+- In Android Studio: Settings > Build, Execution, Deployment > Build Tools > Gradle > Gradle JDK -> installed JDK 17.
+- If an IDE generated gradle/gradle-daemon-jvm.properties requesting JDK25, back it up then remove it from the project; this ZIP does not include it.
+- Open THIS folder, not its parent. Run BUILD_WINDOWS.bat or `gradlew.bat :app:assembleDebug --no-daemon`.
+- The project includes no keystore.properties, .jks or local.properties; Android SDK setup is local to the user's PC.
+- Release without a private keystore can be UNSIGNED: inspect with apksigner.
+
+LIMITATIONS: Static source checks and ZIP CRC verification are not Gradle compile or device tests. This environment has no Android SDK or Gradle distribution. This handoff must not be called a verified APK. Use v1.4.1_signed.apk as known-good user reference.

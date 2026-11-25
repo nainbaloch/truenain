@@ -1,0 +1,2 @@
+-keep class com.truenain.app.MainActivity { *; }
+-keep class com.truenain.app.TrimActivity { *; }

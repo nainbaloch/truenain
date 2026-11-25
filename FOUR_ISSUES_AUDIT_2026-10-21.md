@@ -1,0 +1,12 @@
+# TRUE NAIN — 4 issue correction audit (source candidate)
+
+Starting baseline: FIX_02_ULTRA_SLOW_SOURCE.zip. All changes are incremental; prior player/decoder/frame tools preserved.
+
+1. **Automatic library**: added runtime video-media read permission handling (READ_MEDIA_VIDEO on 33+, READ_EXTERNAL_STORAGE maxSdk32), MediaStore query on background worker, refresh action, merging with persisted manually added SAF videos. Android 14 partial-media selection may limit results to allowed videos; no app can promise access to all media if permission denied. No Internet permission added.
+2. **Control customization**: saved Show/Hide controls preserved. Registered optional player and frame buttons now allow long-press Move left / Move right and store visual order. App applies saved ordering when those rows are rebuilt. Not every on-screen widget is draggable; critical Play/Pause / Seek controls are intentionally kept operable. Display layout can differ in narrow/landscape orientations. This is a partial controls-layout implementation, not a universal drag-and-drop editor.
+3. **All-frame extraction**: existing independent source + retry preserved. Export confirmation now reports actual reopened decoder count, saved count and decode failure count; continues using exact PTS-named PNG files and never calls a partial result complete. No real reference CFR/VFR/B-frame videos or device were available, so **exactness is NOT VERIFIED**. On decoding failure it stops with explicit partial-export status, rather than silently dropping a frame.
+4. **Rev3 build**: cannot certify Rev3 from an earlier build. This candidate has an updated source relative to Rev3/FIX02. Android SDK/platform android.jar and Gradle distribution unavailable in the current execution environment; **compileDebugJavaWithJavac / assembleDebug / assembleRelease NOT RUN**. User's previous successful build logs are for older source only.
+
+Static verification: Java source braces balanced; ZIP CRC via Python ZipFile.testzip(); layout XML parse via ElementTree; package/version/Gradle version checked; APK signed build NOT TESTED.
+
+Known remaining boundaries: native ultralow speed and display require actual phone testing; frame-count parity for exotic codecs/VFR cannot be proven statically; extraction may require large storage; control customization does not yet reposition every core view; Android permission grant is user-controlled; build and device testing outstanding.
