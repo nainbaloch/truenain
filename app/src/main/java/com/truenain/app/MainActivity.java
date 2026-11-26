@@ -2256,14 +2256,15 @@ float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
 
     private void setPlayerControlsVisible(boolean visible) {
         controlsVisible = visible;
-        // v2.5.2: TOP pill (⛶ ↻ 360 ⋮) HAMESHA visible — controls chhupne par bhi
-        // ↻/360/⛶ ka tap seedha button par lage (pehle top bhi chhup jati thi →
-        // chhupe controls par ↻ ka tap sirf controls dikhata tha, video ghumm ti
-        // nahi — user: "MP me rotate nh hori"). Sirf bottom bar + seek chhupte hain.
-        if (playerTop != null && playerTop.getVisibility() != View.VISIBLE) {
-            playerTop.setVisibility(View.VISIBLE);
-            playerTop.setClickable(true);
-            playerTop.setAlpha(1f);
+        // FIX: Hide top bar in fullscreen, keep visible otherwise
+        if (fullscreen) {
+            setControlViewVisible(playerTop, visible);
+        } else {
+            if (playerTop != null && playerTop.getVisibility() != View.VISIBLE) {
+                playerTop.setVisibility(View.VISIBLE);
+                playerTop.setClickable(true);
+                playerTop.setAlpha(1f);
+            }
         }
         setControlViewVisible(playerBottom, visible);
         ui.removeCallbacks(playerControlsAutoHide);
@@ -2457,7 +2458,7 @@ float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
         if (tile == null || tile.isRecycled()) return;
         int w = tile.getWidth(), h = tile.getHeight();
         if (w < 16 || h < 16) return;
-        float amount = Math.max(0f, Math.min(0.6f, (zoom - 1.0f) / 3.0f)); // start from 1.0x zoom
+        float amount = Math.max(0f, Math.min(0.4f, (zoom - 1.5f) / 1.5f)); // start from 1.5x zoom, cap at 0.4
         if (amount <= 0.01f) return;
         
         int[] px = null;
@@ -3100,17 +3101,12 @@ float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
     }
 
     /** Frame rotate cycle: har tap par frame 90° ghoomta hai — koi menu nahi.
-     *  Zoom level preserve karte hain taake auto-zoom na ho. */
+     *  Zoom reset karte hain taake auto-zoom na ho (user request). */
     private void cycleFrameRotation() {
-        // Preserve current zoom level during rotation to prevent auto-zoom
-        float currentZoom = viewer != null ? viewer.getZoom() : 1f;
-        displayRotation = (displayRotation + 90) % 360;
-        if (viewer != null) {
-            viewer.setDisplayRotation(displayRotation);
-            viewer.setFineRotation(displayRotation + frameFineRotation);   // fine angle qaim rakho
-            // Restore zoom level after rotation
-            viewer.zoomBy(currentZoom / viewer.getZoom());
-        }
+        playerContentRotation = (playerContentRotation + 90) % 360;
+        playerZoom = 1f;  // Reset zoom on rotation
+        playerPanX = playerPanY = 0f;
+        applyPlayerViewTransform();
     }
 
     /** v2.4.5 (user request — Windows-Photos-jaisa magar SAADA): ⟲ icon se ROTATE
