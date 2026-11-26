@@ -59,6 +59,10 @@ public final class GradedVideoView extends FrameLayout {
     private volatile float liveZoom = 1f;
     /** v2.4.6 PHASE 2: live zoom for the GL bicubic sampling path. */
     public void setLiveZoom(float z) { liveZoom = z; }
+
+    private volatile float liveRotation = 0f;
+    /** v2.5.5: live rotation for shader-based rotation (Media Player 360/rotate). */
+    public void setLiveRotation(float r) { liveRotation = r; }
     /** v2.4.6 PHASE 2 (audit fix 5): activity resume par GL restart — black/frozen na ho. */
     public void glResume() {
         try { gl.onResume(); } catch (RuntimeException ignored) {}
@@ -106,6 +110,7 @@ public final class GradedVideoView extends FrameLayout {
         private int program, texId, aPos, aTex, uTexMat;
         private int uTexelLoc, uBrightLoc, uContrastLoc, uSatLoc, uWarmLoc, uShadowLoc, uHighLoc, uVigLoc, uSharpLoc;
         private int uZoomLoc;   // v2.4.6 PHASE 2
+        private int uRotLoc;    // v2.5.5: rotation uniform
         private final float[] st = new float[16];
         private final FloatBuffer vb;
         private final FloatBuffer tb;
@@ -135,6 +140,7 @@ public final class GradedVideoView extends FrameLayout {
                     + "uniform samplerExternalOES sTexture;\n"
                     + "uniform vec2 uTexel;\n"
                     + "uniform float uZoom;\n"
+                    + "uniform float uRotation;\n"  // v2.5.5: rotation in degrees
                     + "uniform float uBright;\n"
                     + "uniform float uContrast;\n"
                     + "uniform float uSat;\n"
@@ -160,13 +166,19 @@ public final class GradedVideoView extends FrameLayout {
                     + "  return sum;\n"
                     + "}\n"
                     + "void main(){\n"
+                    + "  vec2 uv = vTextureCoord;\n"
+                    + "  // Apply rotation around center\n"
+                    + "  float rad = radians(uRotation);\n"
+                    + "  float s = sin(rad), c = cos(rad);\n"
+                    + "  uv = vec2(c * (uv.x - 0.5) - s * (uv.y - 0.5) + 0.5,\n"
+                    + "                s * (uv.x - 0.5) + c * (uv.y - 0.5) + 0.5);\n"
                     + "  vec3 c;\n"
-                    + "  if (uZoom > 1.3) c = sampleBicubic(vTextureCoord);\n"
-                    + "  else c = texture2D(sTexture, vTextureCoord).rgb;\n"
-                    + "  vec3 n1 = texture2D(sTexture, vTextureCoord + vec2(uTexel.x, 0.0)).rgb;\n"
-                    + "  vec3 n2 = texture2D(sTexture, vTextureCoord - vec2(uTexel.x, 0.0)).rgb;\n"
-                    + "  vec3 n3 = texture2D(sTexture, vTextureCoord + vec2(0.0, uTexel.y)).rgb;\n"
-                    + "  vec3 n4 = texture2D(sTexture, vTextureCoord - vec2(0.0, uTexel.y)).rgb;\n"
+                    + "  if (uZoom > 1.3) c = sampleBicubic(uv);\n"
+                    + "  else c = texture2D(sTexture, uv).rgb;\n"
+                    + "  vec3 n1 = texture2D(sTexture, uv + vec2(uTexel.x, 0.0)).rgb;\n"
+                    + "  vec3 n2 = texture2D(sTexture, uv - vec2(uTexel.x, 0.0)).rgb;\n"
+                    + "  vec3 n3 = texture2D(sTexture, uv + vec2(0.0, uTexel.y)).rgb;\n"
+                    + "  vec3 n4 = texture2D(sTexture, uv - vec2(0.0, uTexel.y)).rgb;\n"
                     + "  vec3 blur = (n1 + n2 + n3 + n4) * 0.25;\n"
                     + "  float effSharp = (uZoom > 1.5) ? max(uSharp, 0.30) : uSharp;\n" + "  c = c + (c - blur) * effSharp;\n"
                     + "  c += uBright;\n"
@@ -177,7 +189,7 @@ public final class GradedVideoView extends FrameLayout {
                     + "  float l01 = clamp(dot(c, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);\n"
                     + "  c += uShadow * (1.0 - smoothstep(0.0, 0.45, l01)) * vec3(0.10);\n"
                     + "  c -= uHigh * smoothstep(0.55, 1.0, l01) * vec3(0.10);\n"
-                    + "  vec2 d = vTextureCoord - vec2(0.5);\n"
+                    + "  vec2 d = uv - vec2(0.5);\n"
                     + "  c *= 1.0 - uVig * smoothstep(0.25, 0.85, dot(d, d) * 2.0);\n"
                     + "  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);\n"
                     + "}";
@@ -187,6 +199,7 @@ public final class GradedVideoView extends FrameLayout {
             uTexMat = GLES20.glGetUniformLocation(program, "uTexMatrix");
             uTexelLoc = GLES20.glGetUniformLocation(program, "uTexel");
             uZoomLoc = GLES20.glGetUniformLocation(program, "uZoom");
+            uRotLoc = GLES20.glGetUniformLocation(program, "uRotation");
             uBrightLoc = GLES20.glGetUniformLocation(program, "uBright");
             uContrastLoc = GLES20.glGetUniformLocation(program, "uContrast");
             uSatLoc = GLES20.glGetUniformLocation(program, "uSat");
@@ -241,11 +254,12 @@ public final class GradedVideoView extends FrameLayout {
             } else {
                 GLES20.glViewport(0, 0, Math.max(1, sw), Math.max(1, sh));
             }
-            GLES20.glUseProgram(program);
+GLES20.glUseProgram(program);
             // Quality Look uniforms (live — look badalte hi agle frame par lag jata hai).
             float[] p = ColorGrade.params(lookPreset);
             GLES20.glUniform2f(uTexelLoc, texelX(), texelY());
             GLES20.glUniform1f(uZoomLoc, host.liveZoom);
+            GLES20.glUniform1f(uRotLoc, host.liveRotation);  // v2.5.5: rotation for shader-based rotation
             GLES20.glUniform1f(uBrightLoc, p[0]);
             GLES20.glUniform1f(uContrastLoc, p[1]);
             GLES20.glUniform1f(uSatLoc, p[2]);

@@ -1183,6 +1183,10 @@ public class MainActivity extends Activity {
             buildFrameUi();
             if (fullscreen) setFrameControlsVisible(false);
         }
+        // Media Player: top bar should hide in fullscreen
+        if (mode == MODE_PLAYER) {
+            setPlayerControlsVisible(!fullscreen);
+        }
     }
 
     private void applySourceOrientation() {
@@ -1243,16 +1247,19 @@ public class MainActivity extends Activity {
         }
         // Never shrink the underlying VideoView below its fixed viewport: that reveals
         // empty edges and makes the border look as if it has moved.
-        float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
+float total = Math.max(1f, Math.min(maxPlayerZoom(), base * playerZoom));
         // v2.4.8: GL ko view ka ASLI zoom (total) — ek hi number view+GL dono par.
         videoView.setLiveZoom(total);
+        // v2.5.5: shader-based rotation for smooth 360° rotation in Media Player
+        videoView.setLiveRotation(playerContentRotation + playerFineRotation);
         // v2.4.8: ek hi cap — ZC ka maxZoom bhi isi source-pixel cap par (warna ZC zoom
-        // aage barhta rahta hai aur view ruk jata hai → pinch ke baad jump).
+        // aage barhta rahta hai aur view ruk jata hai — pinch ke baad jump).
         if (playerZc != null && Math.abs(maxPlayerZoom() - playerZc.getMaxZoom()) > 0.01f)
             playerZc.setMaxZoom(maxPlayerZoom());
         videoView.setScaleX(total);
         videoView.setScaleY(total);
-        videoView.setRotation(playerContentRotation + playerFineRotation);   // v2.4.4: 90-steps + fine angle
+        // Note: rotation now handled by shader in GradedVideoView, so we don't set View rotation
+        // videoView.setRotation(playerContentRotation + playerFineRotation);   // v2.4.4: 90-steps + fine angle
         float w = videoView.getWidth(), h = videoView.getHeight();
         // Scale is applied only to video content; navigation controls never transform.
         // Prevent empty gaps outside the fixed viewport when zooming/panning.
@@ -2195,9 +2202,32 @@ public class MainActivity extends Activity {
      *  v2.4.6 FIX (user recording r_05): rotate+zoom ka combo "ajeeb" view banata
      *  tha (zoomed arm upside-down) — ab rotate par zoom/pan RESET (clean fit). */
     private void cyclePlayerRotation() {
+        // Preserve current zoom level during rotation to prevent auto-zoom
+        float currentTotalZoom = playerTotalScale;
         playerContentRotation = (playerContentRotation + 90) % 360;
-        if (playerZc != null) playerZc.reset(false);   // zoom+pan reset — rotate+zoom combo bug fix
-        playerZoom = 1f;
+        if (playerZc != null) playerZc.reset(false);
+        // Recalculate zoom to maintain same visual scale after rotation
+        applyPlayerViewTransform();
+        // Restore zoom level after rotation
+        if (playerZc != null) {
+            float newBase = 1f;
+            if (playerPrepared && mediaPlayer != null && videoView != null && videoView.getWidth() > 0 && videoView.getHeight() > 0) {
+                int vw = Math.max(1, mediaPlayer.getVideoWidth());
+                int vh = Math.max(1, mediaPlayer.getVideoHeight());
+                boolean swap = playerContentRotation == 90 || playerContentRotation == 270;
+                if (swap) { int t = vw; vw = vh; vh = t; }
+                float videoAspect = vw / (float) vh;
+                float viewAspect = videoView.getWidth() / (float) Math.max(1, videoView.getHeight());
+                if (playerDisplayMode == ZoomableImageView.MODE_FILL) {
+                    newBase = videoAspect > viewAspect ? videoAspect / viewAspect : viewAspect / videoAspect;
+                } else if (playerDisplayMode == ZoomableImageView.MODE_ONE_TO_ONE) {
+                    float fitW = videoAspect > viewAspect ? videoView.getWidth() : videoView.getHeight() * videoAspect;
+                    newBase = vw / Math.max(1f, fitW);
+                }
+            }
+            float newZoom = currentTotalZoom / newBase;
+            playerZoom = Math.max(1f, Math.min(maxPlayerZoom(), newZoom));
+        }
         playerPanX = playerPanY = 0f;
         applyPlayerViewTransform();
     }
@@ -3069,12 +3099,17 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    /** Frame rotate cycle: har tap par frame 90° ghoomta hai — koi menu nahi. */
+    /** Frame rotate cycle: har tap par frame 90° ghoomta hai — koi menu nahi.
+     *  Zoom level preserve karte hain taake auto-zoom na ho. */
     private void cycleFrameRotation() {
+        // Preserve current zoom level during rotation to prevent auto-zoom
+        float currentZoom = viewer != null ? viewer.getZoom() : 1f;
         displayRotation = (displayRotation + 90) % 360;
         if (viewer != null) {
             viewer.setDisplayRotation(displayRotation);
             viewer.setFineRotation(displayRotation + frameFineRotation);   // fine angle qaim rakho
+            // Restore zoom level after rotation
+            viewer.zoomBy(currentZoom / viewer.getZoom());
         }
     }
 
@@ -4402,6 +4437,17 @@ public class MainActivity extends Activity {
                     + (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1f : -1f));
             updateRotateOverlay();
             return true;
+        }
+        // Frame Mode: left/right arrow keys for frame navigation (previous/next frame)
+        if (mode == MODE_FRAME && !fineRotateMode && uiSource != null) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                manualStep(-1);  // previous frame
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                manualStep(1);   // next frame
+                return true;
+            }
         }
         if (mode == MODE_FRAME && landscape && uiSource != null) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP)   { manualStep(1);  return true; }
